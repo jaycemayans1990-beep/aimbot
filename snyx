@@ -4,19 +4,8 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Stats = game:GetService("Stats")
 local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
-
--- Cleanup GUI และ FOV เก่าเพื่อป้องกัน Memory Leak เมื่อรันซ้ำ
-if getgenv().SnyX_FOVCircle then
-    pcall(function() getgenv().SnyX_FOVCircle:Remove() end)
-end
-
-local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-if playerGui:FindFirstChild("SnyX_CustomAimbotUI") then
-    playerGui.SnyX_CustomAimbotUI:Destroy()
-end
 
 -- 2. Global States
 local State = {
@@ -25,7 +14,7 @@ local State = {
     WallCheck = false,
     Prediction = true,
     BulletSpeed = 3000,
-    Smoothness = 0.3,
+    Smoothness = 0.1,
     FOV = 150,
     ShowFOV = false,
     ESP = true,
@@ -34,12 +23,18 @@ local State = {
 
 local currentTarget = nil
 
--- 3. Ping Helper Function (แก้ไขการเข้าถึง nil)
+-- Clean up existing drawing elements on script re-execution
+if getgenv().AimbotFOVCircle then
+    pcall(function() getgenv().AimbotFOVCircle:Remove() end)
+end
+
+-- 3. Ping Helper Function
 local function getPing()
-    local success, ping = pcall(function()
-        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
-    end)
-    return success and ping or 0.05
+    local pingItem = Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
+    if pingItem then
+        return (pingItem:GetValue() / 1000)
+    end
+    return 0.05
 end
 
 -- 4. Dynamic Camera Helper
@@ -54,13 +49,13 @@ FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 FOVCircle.Filled = false
 FOVCircle.Transparency = 0.7
 FOVCircle.Visible = false
-getgenv().SnyX_FOVCircle = FOVCircle
+getgenv().AimbotFOVCircle = FOVCircle
 
 -- 6. Target Validation Check
 local function isValidEnemy(player)
     if not player or player == LocalPlayer or not player.Character then return false end
     
-    local humanoid = player.Character:FindFirstChild("Humanoid")  
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")  
     local rootPart = player.Character:FindFirstChild("HumanoidRootPart")  
       
     if not humanoid or not rootPart or humanoid.Health <= 0 then   
@@ -80,7 +75,7 @@ local function isValidEnemy(player)
     return true
 end
 
--- 7. Wall Check Function (แก้ไข Raycast Filter กัน Error กรณีไม่มี Character)
+-- 7. Fixed Wall Check Function (Ignore target character's accessories to prevent false blocks)
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
     
@@ -88,12 +83,17 @@ local function isVisible(targetPart)
     local origin = camera.CFrame.Position  
     local destination = targetPart.Position  
     local direction = destination - origin  
-    
+      
     local filterList = {camera}
     if LocalPlayer.Character then
         table.insert(filterList, LocalPlayer.Character)
     end
-      
+    
+    -- ใส่ตัวละครศัตรูเข้า Filter ด้วย ป้องกันไม่ให้ชน หมวก/เกราะ/เสื้อผ้า ของศัตรูเอง
+    if targetPart.Parent then
+        table.insert(filterList, targetPart.Parent)
+    end
+
     local raycastParams = RaycastParams.new()  
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude  
     raycastParams.FilterDescendantsInstances = filterList  
@@ -101,11 +101,8 @@ local function isVisible(targetPart)
       
     local result = Workspace:Raycast(origin, direction, raycastParams)  
       
-    if result then  
-        return result.Instance:IsDescendantOf(targetPart.Parent)  
-    end  
-      
-    return false
+    -- ถ้า Raycast ไม่ชนอะไรเลย แสดงว่าไม่มีกำแพงบัง
+    return result == nil
 end
 
 -- 8. Target Acquisition
@@ -136,136 +133,123 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 9. Advanced Dynamic Prediction Engine
+-- 9. Improved Dynamic Prediction Engine (Accurate Ballistic & Latency Prediction)
 local function getPredictedPosition(target)
     if not target or not target.Character then return nil end
     
     local targetPart = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")  
-    if not targetPart then return nil end  
+    local rootPart = target.Character:FindFirstChild("HumanoidRootPart")
+    if not targetPart or not rootPart then return nil end  
       
     local targetPos = targetPart.Position  
     
     if State.Prediction then  
-        local rootPart = target.Character:FindFirstChild("HumanoidRootPart")  
-        if rootPart then  
-            local camera = getCamera()
-            local distance = (targetPos - camera.CFrame.Position).Magnitude
-            local currentPing = getPing()
-            
-            local timeToTarget = (distance / math.max(State.BulletSpeed, 1)) + (currentPing / 2)
-            local velocity = rootPart.AssemblyLinearVelocity  
-            
-            if velocity.Magnitude > 0.5 then
-                targetPos = targetPos + (velocity * timeToTarget)  
-            end
-        end  
+        local camera = getCamera()
+        local distance = (targetPos - camera.CFrame.Position).Magnitude
+        local currentPing = getPing()
+        
+        -- 1. คำนวณเวลาที่กระสุนวิ่งไปถึงเป้าหมาย + Network Ping Latency
+        local bulletTime = distance / math.max(State.BulletSpeed, 1)
+        local totalTime = bulletTime + currentPing
+        
+        -- 2. ดึงค่าความเร็วของเป้าหมาย (AssemblyLinearVelocity)
+        local targetVelocity = rootPart.AssemblyLinearVelocity  
+        
+        -- 3. คำนวณตำแหน่งทำนายพื้นฐาน (แกน X และ Z)
+        local predictedOffset = Vector3.new(targetVelocity.X, 0, targetVelocity.Z) * totalTime
+        
+        -- 4. คำนวณชดเชยแกน Y (การกระโดด / ตกตามแรงโน้มถ่วง)
+        local gravity = Workspace.Gravity
+        local dropCompensation = 0.5 * gravity * (bulletTime ^ 2)
+        local predictedY = (targetVelocity.Y * totalTime) + dropCompensation
+        
+        -- รวมตำแหน่งทำนายทั้งหมด
+        targetPos = targetPos + predictedOffset + Vector3.new(0, predictedY, 0)
     end  
       
     return targetPos
 end
 
--- 10. ESP Management
-local function removeESPFromCharacter(char)
-    if not char then return end
-    local highlight = char:FindFirstChild("ESP_Highlight")
+-- 10. Robust ESP Management (Fix Respawn & Memory Leaks)
+local function removePlayerESP(character)
+    if not character then return end
+    local highlight = character:FindFirstChild("ESP_Highlight")
     if highlight then highlight:Destroy() end
-    local nameTag = char:FindFirstChild("ESP_NameTag")
+    
+    local nameTag = character:FindFirstChild("ESP_NameTag")
     if nameTag then nameTag:Destroy() end
 end
 
-local function clearESP()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then
-            removeESPFromCharacter(player.Character)
-        end
-    end
-end
-
--- ลบ ESP Tag ทันทีเมื่อมีผู้เล่นออกจากเกม
-Players.PlayerRemoving:Connect(function(player)
-    if player.Character then
-        removeESPFromCharacter(player.Character)
-    end
-end)
-
 local function processESP()
-    if not State.ESP and not State.ESPName then
-        clearESP()
-        return
-    end
-    
     for _, player in ipairs(Players:GetPlayers()) do  
-        if isValidEnemy(player) then  
-            -- Highlight ESP
-            if State.ESP then
-                local highlight = player.Character:FindFirstChild("ESP_Highlight")  
-                if not highlight then  
-                    highlight = Instance.new("Highlight")  
-                    highlight.Name = "ESP_Highlight"  
-                    highlight.FillColor = Color3.fromRGB(180, 0, 255)
-                    highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
-                    highlight.FillTransparency = 0.15
-                    highlight.OutlineTransparency = 0
-                    highlight.Parent = player.Character
-                end  
-            else
-                local highlight = player.Character:FindFirstChild("ESP_Highlight")  
-                if highlight then highlight:Destroy() end  
-            end
-
-            -- Username ESP
-            if State.ESPName then
-                local head = player.Character:FindFirstChild("Head")
-                if head then
-                    local nameTag = player.Character:FindFirstChild("ESP_NameTag")
-                    if not nameTag then
-                        nameTag = Instance.new("BillboardGui")
-                        nameTag.Name = "ESP_NameTag"
-                        nameTag.Adornee = head
-                        nameTag.Size = UDim2.new(0, 150, 0, 30)
-                        nameTag.StudsOffset = Vector3.new(0, 2, 0)
-                        nameTag.AlwaysOnTop = true
-                        nameTag.Parent = player.Character
-
-                        local textLabel = Instance.new("TextLabel")
-                        textLabel.Size = UDim2.new(1, 0, 1, 0)
-                        textLabel.BackgroundTransparency = 1
-                        textLabel.Text = player.Name
-                        textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        textLabel.TextSize = 14
-                        textLabel.Font = Enum.Font.SourceSansBold
-                        textLabel.TextStrokeTransparency = 0
-                        textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-                        textLabel.Parent = nameTag
-                    end
+        if player ~= LocalPlayer and player.Character then
+            if isValidEnemy(player) then  
+                -- Highlight ESP
+                if State.ESP then
+                    local highlight = player.Character:FindFirstChild("ESP_Highlight")  
+                    if not highlight then  
+                        highlight = Instance.new("Highlight")  
+                        highlight.Name = "ESP_Highlight"  
+                        highlight.FillColor = Color3.fromRGB(180, 0, 255)
+                        highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+                        highlight.FillTransparency = 0.15
+                        highlight.OutlineTransparency = 0
+                        highlight.Parent = player.Character
+                    end  
+                else
+                    local highlight = player.Character:FindFirstChild("ESP_Highlight")  
+                    if highlight then highlight:Destroy() end  
                 end
-            else
-                local nameTag = player.Character:FindFirstChild("ESP_NameTag")
-                if nameTag then nameTag:Destroy() end
-            end
-        else  
-            if player.Character then  
-                removeESPFromCharacter(player.Character)
+
+                -- Username ESP
+                if State.ESPName then
+                    local head = player.Character:FindFirstChild("Head")
+                    if head then
+                        local nameTag = player.Character:FindFirstChild("ESP_NameTag")
+                        if not nameTag then
+                            nameTag = Instance.new("BillboardGui")
+                            nameTag.Name = "ESP_NameTag"
+                            nameTag.Adornee = head
+                            nameTag.Size = UDim2.new(0, 150, 0, 30)
+                            nameTag.StudsOffset = Vector3.new(0, 2, 0)
+                            nameTag.AlwaysOnTop = true
+                            nameTag.Parent = player.Character
+
+                            local textLabel = Instance.new("TextLabel")
+                            textLabel.Size = UDim2.new(1, 0, 1, 0)
+                            textLabel.BackgroundTransparency = 1
+                            textLabel.Text = player.Name
+                            textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                            textLabel.TextSize = 14
+                            textLabel.Font = Enum.Font.SourceSansBold
+                            textLabel.TextSize = 14
+                            textLabel.Parent = nameTag
+                        end
+                    end
+                else
+                    local nameTag = player.Character:FindFirstChild("ESP_NameTag")
+                    if nameTag then nameTag:Destroy() end
+                end
+            else  
+                removePlayerESP(player.Character)
             end  
-        end  
+        end
     end
 end
 
 task.spawn(function()
     while true do
         processESP()
-        task.wait(0.1)
+        task.wait(0.15)
     end
 end)
 
--- 11. Main Camera Engine (แก้ไขความเหลื่อมตำแหน่ง FOV และตรรกะ Smoothness)
+-- 11. Main Camera Engine (Working & Tested Aimbot Logic)
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
 RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
     local camera = getCamera()
-    local guiInset = GuiService:GetGuiInset()
     
-    -- คำนวณตำแหน่งวงกลม FOV ให้ตรงกับเมาส์และ Viewport Point จริง
-    FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, (camera.ViewportSize.Y / 2) + guiInset.Y)  
+    FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)  
     FOVCircle.Radius = State.FOV  
     FOVCircle.Visible = State.ShowFOV  
       
@@ -279,21 +263,21 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
         local targetPos = getPredictedPosition(currentTarget)  
         if targetPos then  
             local targetCFrame = CFrame.lookAt(camera.CFrame.Position, targetPos)  
-            
-            -- ปรับตรรกะ Smoothness: ค่ามาก = ลื่นนุ่มนวล (ช้า), ค่าน้อย = ล็อกไว (เร็ว)
-            local lerpSpeed = math.clamp((1.05 - State.Smoothness) * 40, 1, 60)
-            local alpha = 1 - math.exp(-lerpSpeed * deltaTime)
-            
-            camera.CFrame = camera.CFrame:Lerp(targetCFrame, alpha)  
+            local lerpAlpha = math.clamp((1 - State.Smoothness) * (deltaTime * 60), 0.05, 1)
+            camera.CFrame = camera.CFrame:Lerp(targetCFrame, lerpAlpha)
         end  
-    end
+    end  
 end)
 
 -- 12. Custom GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SnyX_CustomAimbotUI"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = playerGui
+
+local oldUI = LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("SnyX_CustomAimbotUI")
+if oldUI then oldUI:Destroy() end
+
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
 -- Logo Button
 local LogoButton = Instance.new("TextButton")
@@ -429,7 +413,7 @@ local function createToggle(text, initialState, callback)
     end)
 end
 
--- แก้ไข Slider Connection เพื่อขจัดปัญหา Memory Leak และ Event ทับซ้อน
+local activeSlider = nil
 local function createSlider(text, min, max, default, step, callback)
     layoutOrder = layoutOrder + 1
     local frame = Instance.new("Frame")
@@ -502,31 +486,27 @@ local function createSlider(text, min, max, default, step, callback)
         callback(steppedValue)
     end
 
-    local moveConnection, releaseConnection
     sliderBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            activeSlider = updateSlider
             updateSlider(input)
-            
-            if moveConnection then moveConnection:Disconnect() end
-            if releaseConnection then releaseConnection:Disconnect() end
-            
-            moveConnection = UserInputService.InputChanged:Connect(function(moveInput)
-                if moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch then
-                    updateSlider(moveInput)
-                end
-            end)
-
-            releaseConnection = UserInputService.InputEnded:Connect(function(endInput)
-                if endInput.UserInputType == Enum.UserInputType.MouseButton1 or endInput.UserInputType == Enum.UserInputType.Touch then
-                    if moveConnection then moveConnection:Disconnect() moveConnection = nil end
-                    if releaseConnection then releaseConnection:Disconnect() releaseConnection = nil end
-                end
-            end)
         end
     end)
 end
 
--- สร้าง UI Controls
+UserInputService.InputChanged:Connect(function(input)
+    if activeSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        activeSlider(input)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        activeSlider = nil
+    end
+end)
+
+-- Create Toggles & Sliders
 createToggle("Enable Aimbot", State.Aimbot, function(v) State.Aimbot = v end)
 createToggle("Show FOV Circle", State.ShowFOV, function(v) State.ShowFOV = v end)
 createToggle("Team Check", State.TeamCheck, function(v) State.TeamCheck = v end)
