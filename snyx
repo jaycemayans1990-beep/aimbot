@@ -160,11 +160,13 @@ local function getClosestTarget()
     return closestPlayer
 end
 
+-- Dynamic Prediction Engine (ปรับปรุงระบบนุ่มนวล ลดอาการแกว่ง)
 local function getPredictedPosition(target)
     if not target or not target.Character then return nil end
     
     local targetPart = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")  
     local rootPart = target.Character:FindFirstChild("HumanoidRootPart")
+    local humanoid = target.Character:FindFirstChildOfClass("Humanoid")
     if not targetPart or not rootPart then return nil end  
       
     local targetPos = targetPart.Position  
@@ -172,17 +174,29 @@ local function getPredictedPosition(target)
     if State.Prediction then  
         local camera = getCamera()
         local distance = (targetPos - camera.CFrame.Position).Magnitude
-        local currentPing = getPing()
+        local currentPing = math.clamp(getPing(), 0.01, 0.2)
         
         local bulletTime = distance / math.max(State.BulletSpeed, 1)
         local totalTime = bulletTime + currentPing
         
-        local targetVelocity = rootPart.AssemblyLinearVelocity or rootPart.Velocity or Vector3.zero
-        local predictedOffset = Vector3.new(targetVelocity.X, 0, targetVelocity.Z) * totalTime
+        local rawVelocity = rootPart.AssemblyLinearVelocity or rootPart.Velocity or Vector3.zero
+        local speed = rawVelocity.Magnitude
         
-        local gravity = Workspace.Gravity
-        local dropCompensation = 0.5 * gravity * (bulletTime ^ 2)
-        local predictedY = (targetVelocity.Y * totalTime) + dropCompensation
+        -- กรองค่าความเร็วที่สวิงเกินจริง
+        if speed > 100 then
+            rawVelocity = rawVelocity.Unit * 100
+        end
+
+        -- ถ้าตัวละครยืนบนพื้น ให้ตัดการทำนายแนวตั้ง (แกน Y) ทิ้ง ป้องกันเป้าสั่น
+        local velY = rawVelocity.Y
+        local isFreefall = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Freefall
+        if not isFreefall then
+            velY = 0
+        end
+        
+        local predictedOffset = Vector3.new(rawVelocity.X, 0, rawVelocity.Z) * totalTime
+        local dropCompensation = isFreefall and (0.5 * Workspace.Gravity * (bulletTime ^ 2)) or 0
+        local predictedY = (velY * totalTime) + dropCompensation
         
         targetPos = targetPos + predictedOffset + Vector3.new(0, predictedY, 0)
     end  
@@ -514,8 +528,4 @@ createToggle("ESP Username", State.ESPName, function(v) State.ESPName = v end)
 
 createSlider("Bullet Speed", 500, 5000, State.BulletSpeed, 100, function(v) State.BulletSpeed = v end)
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
-createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
-
-LogoButton.MouseButton1Click:Connect(function()
-    MainFrame.Visible = not MainFrame.Visible
-end)
+createSlider("Aimbot FOV Ra
