@@ -24,9 +24,15 @@ local currentTarget = nil
 
 -- 3. Ping Helper Function
 local function getPing()
-    local pingItem = Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
-    if pingItem then
-        return (pingItem:GetValue() / 1000)
+    local network = Stats:FindFirstChild("Network")
+    if network then
+        local serverStats = network:FindFirstChild("ServerStatsItem")
+        if serverStats then
+            local pingItem = serverStats:FindFirstChild("Data Ping")
+            if pingItem then
+                return (pingItem:GetValue() / 1000)
+            end
+        end
     end
     return 0.05
 end
