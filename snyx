@@ -4,7 +4,6 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Stats = game:GetService("Stats")
 local UserInputService = game:GetService("UserInputService")
-
 local LocalPlayer = Players.LocalPlayer
 
 -- 2. Global States
@@ -154,13 +153,10 @@ local function clearESP()
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then
             local highlight = player.Character:FindFirstChild("ESP_Highlight")
-            if highlight then
-                highlight:Destroy()
-            end
+            if highlight then highlight:Destroy() end
+            
             local nameTag = player.Character:FindFirstChild("ESP_NameTag")
-            if nameTag then
-                nameTag:Destroy()
-            end
+            if nameTag then nameTag:Destroy() end
         end
     end
 end
@@ -170,12 +166,15 @@ local function processESP()
         clearESP()
         return
     end
-    
+
     for _, player in ipairs(Players:GetPlayers()) do  
-        if isValidEnemy(player) then  
+        local character = player.Character
+        
+        -- ตรวจสอบว่ามี ตัวละคร + ไม่ใช่ตัวเราเอง + เป็นศัตรู
+        if character and player ~= LocalPlayer and isValidEnemy(player) then  
             -- Highlight ESP
             if State.ESP then
-                local highlight = player.Character:FindFirstChild("ESP_Highlight")  
+                local highlight = character:FindFirstChild("ESP_Highlight")  
                 if not highlight then  
                     highlight = Instance.new("Highlight")  
                     highlight.Name = "ESP_Highlight"  
@@ -183,18 +182,18 @@ local function processESP()
                     highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
                     highlight.FillTransparency = 0.15
                     highlight.OutlineTransparency = 0
-                    highlight.Parent = player.Character
+                    highlight.Parent = character
                 end  
             else
-                local highlight = player.Character:FindFirstChild("ESP_Highlight")  
+                local highlight = character:FindFirstChild("ESP_Highlight")  
                 if highlight then highlight:Destroy() end  
             end
 
             -- Username ESP
             if State.ESPName then
-                local head = player.Character:FindFirstChild("Head")
+                local head = character:FindFirstChild("Head")
                 if head then
-                    local nameTag = player.Character:FindFirstChild("ESP_NameTag")
+                    local nameTag = character:FindFirstChild("ESP_NameTag")
                     if not nameTag then
                         nameTag = Instance.new("BillboardGui")
                         nameTag.Name = "ESP_NameTag"
@@ -202,7 +201,7 @@ local function processESP()
                         nameTag.Size = UDim2.new(0, 150, 0, 30)
                         nameTag.StudsOffset = Vector3.new(0, 2, 0)
                         nameTag.AlwaysOnTop = true
-                        nameTag.Parent = player.Character
+                        nameTag.Parent = character
 
                         local textLabel = Instance.new("TextLabel")
                         textLabel.Size = UDim2.new(1, 0, 1, 0)
@@ -217,15 +216,16 @@ local function processESP()
                     end
                 end
             else
-                local nameTag = player.Character:FindFirstChild("ESP_NameTag")
+                local nameTag = character:FindFirstChild("ESP_NameTag")
                 if nameTag then nameTag:Destroy() end
             end
         else  
-            if player.Character then  
-                local highlight = player.Character:FindFirstChild("ESP_Highlight")  
+            -- เคลียร์ ESP ออกหากไม่ใช่ศัตรู หรือตัวละครหายไป
+            if character then  
+                local highlight = character:FindFirstChild("ESP_Highlight")  
                 if highlight then highlight:Destroy() end  
 
-                local nameTag = player.Character:FindFirstChild("ESP_NameTag")
+                local nameTag = character:FindFirstChild("ESP_NameTag")
                 if nameTag then nameTag:Destroy() end
             end  
         end  
