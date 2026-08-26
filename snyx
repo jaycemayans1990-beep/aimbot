@@ -23,13 +23,23 @@ local State = {
 
 local currentTarget = nil
 
+-- Reusable static objects to eliminate frame-drop GC pressure
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+raycastParams.IgnoreWater = true
+
 -- Clean up existing drawing elements on script re-execution
 if getgenv().AimbotFOVCircle then
     pcall(function() getgenv().AimbotFOVCircle:Remove() end)
 end
 
--- 3. Ping Helper Function
+-- 3. Ping Helper Function (Safe API Access)
 local function getPing()
+    local success, ping = pcall(function()
+        return LocalPlayer:GetNetworkPing()
+    end)
+    if success and ping then return ping end
+    
     local pingItem = Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
     if pingItem then
         return (pingItem:GetValue() / 1000)
@@ -75,11 +85,13 @@ local function isValidEnemy(player)
     return true
 end
 
--- 7. Fixed Wall Check Function (Ignore target character's accessories to prevent false blocks)
+-- 7. Fixed & Memory-Optimized Wall Check
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
     
     local camera = getCamera()  
+    if not camera then return false end
+    
     local origin = camera.CFrame.Position  
     local destination = targetPart.Position  
     local direction = destination - origin  
@@ -89,19 +101,13 @@ local function isVisible(targetPart)
         table.insert(filterList, LocalPlayer.Character)
     end
     
-    -- ใส่ตัวละครศัตรูเข้า Filter ด้วย ป้องกันไม่ให้ชน หมวก/เกราะ/เสื้อผ้า ของศัตรูเอง
     if targetPart.Parent then
         table.insert(filterList, targetPart.Parent)
     end
 
-    local raycastParams = RaycastParams.new()  
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude  
     raycastParams.FilterDescendantsInstances = filterList  
-    raycastParams.IgnoreWater = true  
-      
     local result = Workspace:Raycast(origin, direction, raycastParams)  
       
-    -- ถ้า Raycast ไม่ชนอะไรเลย แสดงว่าไม่มีกำแพงบัง
     return result == nil
 end
 
@@ -110,6 +116,8 @@ local function getClosestTarget()
     local closestPlayer = nil
     local shortestDist = State.FOV
     local camera = getCamera()
+    if not camera then return nil end
+    
     local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
     
     for _, player in ipairs(Players:GetPlayers()) do  
@@ -133,7 +141,7 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 9. Improved Dynamic Prediction Engine (Accurate Ballistic & Latency Prediction)
+-- 9. Dynamic Prediction Engine (Optimized Ballistics)
 local function getPredictedPosition(target)
     if not target or not target.Character then return nil end
     
@@ -145,32 +153,27 @@ local function getPredictedPosition(target)
     
     if State.Prediction then  
         local camera = getCamera()
+        if not camera then return targetPos end
+        
         local distance = (targetPos - camera.CFrame.Position).Magnitude
         local currentPing = getPing()
         
-        -- 1. คำนวณเวลาที่กระสุนวิ่งไปถึงเป้าหมาย + Network Ping Latency
         local bulletTime = distance / math.max(State.BulletSpeed, 1)
         local totalTime = bulletTime + currentPing
         
-        -- 2. ดึงค่าความเร็วของเป้าหมาย (AssemblyLinearVelocity)
         local targetVelocity = rootPart.AssemblyLinearVelocity  
+        local predictedOffset = targetVelocity * totalTime
         
-        -- 3. คำนวณตำแหน่งทำนายพื้นฐาน (แกน X และ Z)
-        local predictedOffset = Vector3.new(targetVelocity.X, 0, targetVelocity.Z) * totalTime
-        
-        -- 4. คำนวณชดเชยแกน Y (การกระโดด / ตกตามแรงโน้มถ่วง)
         local gravity = Workspace.Gravity
-        local dropCompensation = 0.5 * gravity * (bulletTime ^ 2)
-        local predictedY = (targetVelocity.Y * totalTime) + dropCompensation
+        local dropCompensation = Vector3.new(0, 0.5 * gravity * (totalTime ^ 2), 0)
         
-        -- รวมตำแหน่งทำนายทั้งหมด
-        targetPos = targetPos + predictedOffset + Vector3.new(0, predictedY, 0)
+        targetPos = targetPos + predictedOffset + dropCompensation
     end  
       
     return targetPos
 end
 
--- 10. Robust ESP Management (Fix Respawn & Memory Leaks)
+-- 10. ESP Management System
 local function removePlayerESP(character)
     if not character then return end
     local highlight = character:FindFirstChild("ESP_Highlight")
@@ -182,9 +185,8 @@ end
 
 local function processESP()
     for _, player in ipairs(Players:GetPlayers()) do  
-        if player ~= LocalPlayer and player.Character then
-            if isValidEnemy(player) then  
-                -- Highlight ESP
+        if player ~= LocalPlayer then
+            if player.Character and isValidEnemy(player) then  
                 if State.ESP then
                     local highlight = player.Character:FindFirstChild("ESP_Highlight")  
                     if not highlight then  
@@ -197,11 +199,10 @@ local function processESP()
                         highlight.Parent = player.Character
                     end  
                 else
-                    local highlight = player.Character:FindFirstChild("ESP_Highlight")  
-                    if highlight then highlight:Destroy() end  
+                    local highlight = player.Character:FindFirstChild("ESP_Highlight")
+                    if highlight then highlight:Destroy() end
                 end
 
-                -- Username ESP
                 if State.ESPName then
                     local head = player.Character:FindFirstChild("Head")
                     if head then
@@ -220,7 +221,6 @@ local function processESP()
                             textLabel.BackgroundTransparency = 1
                             textLabel.Text = player.Name
                             textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-                            textLabel.TextSize = 14
                             textLabel.Font = Enum.Font.SourceSansBold
                             textLabel.TextSize = 14
                             textLabel.Parent = nameTag
@@ -230,7 +230,7 @@ local function processESP()
                     local nameTag = player.Character:FindFirstChild("ESP_NameTag")
                     if nameTag then nameTag:Destroy() end
                 end
-            else  
+            elseif player.Character then  
                 removePlayerESP(player.Character)
             end  
         end
@@ -244,10 +244,11 @@ task.spawn(function()
     end
 end)
 
--- 11. Main Camera Engine (Working & Tested Aimbot Logic)
+-- 11. Main Camera Engine
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
-RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
+RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value, function(deltaTime)
     local camera = getCamera()
+    if not camera then return end
     
     FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)  
     FOVCircle.Radius = State.FOV  
