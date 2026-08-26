@@ -528,4 +528,8 @@ createToggle("ESP Username", State.ESPName, function(v) State.ESPName = v end)
 
 createSlider("Bullet Speed", 500, 5000, State.BulletSpeed, 100, function(v) State.BulletSpeed = v end)
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
-createSlider("Aimbot FOV Ra
+createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
+
+LogoButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
