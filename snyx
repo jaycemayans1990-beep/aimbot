@@ -6,8 +6,9 @@ local Stats = game:GetService("Stats")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
--- 2. Global States
+-- 2. Global States (รวมของทั้งสองไฟล์)
 local State = {
+    -- Aimbot States
     Aimbot = true,
     TeamCheck = true,
     WallCheck = false,
@@ -17,10 +18,19 @@ local State = {
     FOV = 90,
     ShowFOV = false,
     ESP = true,
-    ESPName = false
+    ESPName = false,
+    
+    -- Speed & Invisible States
+    SpeedHack = false,
+    SpeedValue = 25,
+    Invisible = false
 }
 
 local currentTarget = nil
+
+-- =====================================================
+-- [ PART 1: AIMBOT & ESP ENGINE (โค้ดเดิมจากไฟล์แรก) ]
+-- =====================================================
 
 -- 3. Ping Helper Function
 local function getPing()
@@ -176,9 +186,7 @@ local function processESP()
     for _, player in ipairs(Players:GetPlayers()) do  
         local character = player.Character
         
-        -- ตรวจสอบว่ามี ตัวละคร + ไม่ใช่ตัวเราเอง + เป็นศัตรู
         if character and player ~= LocalPlayer and isValidEnemy(player) then  
-            -- Highlight ESP
             if State.ESP then
                 local highlight = character:FindFirstChild("ESP_Highlight")  
                 if not highlight then  
@@ -195,7 +203,6 @@ local function processESP()
                 if highlight then highlight:Destroy() end  
             end
 
-            -- Username ESP
             if State.ESPName then
                 local head = character:FindFirstChild("Head")
                 if head then
@@ -226,7 +233,6 @@ local function processESP()
                 if nameTag then nameTag:Destroy() end
             end
         else  
-            -- เคลียร์ ESP ออกหากไม่ใช่ศัตรู หรือตัวละครหายไป
             if character then  
                 local highlight = character:FindFirstChild("ESP_Highlight")  
                 if highlight then highlight:Destroy() end  
@@ -273,9 +279,115 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     end
 end)
 
--- 12. Custom GUI Construction (แก้แล้ว)
+-- =====================================================
+-- [ PART 2: SPEED & INVISIBLE ENGINE (จากไฟล์ที่สอง) ]
+-- =====================================================
+
+local speedConnection = nil
+local invisibleConnections = {} 
+
+-- 12. CLEAN SPEED LOCK 
+local function disableSpeedLoop()
+    if speedConnection then
+        speedConnection:Disconnect()
+        speedConnection = nil
+    end
+    
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = 16
+        end
+    end
+end
+
+local function enableSpeedLoop()
+    disableSpeedLoop()
+    
+    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local humanoid = character:WaitForChild("Humanoid", 5)
+    
+    if humanoid then
+        humanoid.WalkSpeed = State.SpeedValue
+        
+        local isChanging = false
+        speedConnection = humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if isChanging then return end
+            if State.SpeedHack and humanoid.WalkSpeed ~= State.SpeedValue then
+                isChanging = true
+                humanoid.WalkSpeed = State.SpeedValue
+                isChanging = false
+            end
+        end)
+    end
+end
+
+-- 13. HIGH-PERFORMANCE INVISIBLE
+local function cleanInvisibleConnections()
+    for _, conn in ipairs(invisibleConnections) do
+        conn:Disconnect()
+    end
+    table.clear(invisibleConnections)
+end
+
+local function makePartInvisible(part)
+    if (part:IsA("BasePart") and part.Name ~= "HumanoidRootPart") or part:IsA("Decal") then
+        part.Transparency = 1
+    end
+end
+
+local function enableInvisible()
+    cleanInvisibleConnections()
+    
+    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    if not character then return end
+    
+    for _, part in ipairs(character:GetDescendants()) do
+        makePartInvisible(part)
+    end
+    
+    local conn = character.DescendantAdded:Connect(function(part)
+        if State.Invisible then
+            makePartInvisible(part)
+        end
+    end)
+    table.insert(invisibleConnections, conn)
+end
+
+local function disableInvisible()
+    cleanInvisibleConnections()
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            part.Transparency = 0
+        elseif part:IsA("Decal") then
+            part.Transparency = 0
+        end
+    end
+end
+
+-- 14. ตรวจสอบตอนเปลี่ยนตัวละคร (ตายแล้วเกิดใหม่)
+LocalPlayer.CharacterAdded:Connect(function(character)
+    character:WaitForChild("Humanoid", 5)
+    task.wait(0.2)
+    
+    if State.SpeedHack then
+        enableSpeedLoop()
+    end
+    if State.Invisible then
+        enableInvisible()
+    end
+end)
+-- =====================================================
+-- [ PART 3: UI (แบบเดียวกันทั้งหมด) ]
+-- =====================================================
+
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SnyX_CustomAimbotUI"
+ScreenGui.Name = "SnyX_UnifiedUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -307,7 +419,7 @@ LogoStroke.Parent = LogoButton
 -- ===== Main Frame (UI หลัก) =====
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 290, 0, 360)
+MainFrame.Size = UDim2.new(0, 290, 0, 420) -- ขยายนิดหน่อยให้พอดี
 MainFrame.Position = UDim2.new(0.1, 0, 0.2, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 0
@@ -339,14 +451,12 @@ local TitleText = Instance.new("TextLabel")
 TitleText.Size = UDim2.new(0.7, 0, 1, 0)
 TitleText.Position = UDim2.new(0.04, 0, 0, 0)
 TitleText.BackgroundTransparency = 1
-TitleText.Text = "ADVANCED AIMBOT SYSTEM"
+TitleText.Text = "SNYX UNIFIED SYSTEM"
 TitleText.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleText.TextSize = 13
 TitleText.Font = Enum.Font.SourceSansBold
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = TitleBar
-
--- (ไม่มีปุ่ม Collapse แล้ว)
 
 local ScrollFrame = Instance.new("ScrollingFrame")
 ScrollFrame.Size = UDim2.new(1, -10, 1, -45)
@@ -509,7 +619,11 @@ local function createSlider(text, min, max, default, step, callback)
     end)
 end
 
--- สร้าง Toggle และ Slider
+-- =====================================================
+-- [ PART 4: สร้าง UI ทั้งหมด ]
+-- =====================================================
+
+-- Aimbot Section
 createToggle("Enable Aimbot", State.Aimbot, function(v) State.Aimbot = v end)
 createToggle("Show FOV Circle", State.ShowFOV, function(v) State.ShowFOV = v end)
 createToggle("Team Check", State.TeamCheck, function(v) State.TeamCheck = v end)
@@ -522,8 +636,34 @@ createSlider("Bullet Speed", 500, 5000, State.BulletSpeed, 100, function(v) Stat
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
 createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
 
+-- Speed & Invisible Section
+createToggle("Enable Speed Hack", State.SpeedHack, function(v)
+    State.SpeedHack = v
+    if v then
+        enableSpeedLoop()
+    else
+        disableSpeedLoop()
+    end
+end)
+
+createToggle("Invisible Character", State.Invisible, function(v)
+    State.Invisible = v
+    if v then
+        enableInvisible()
+    else
+        disableInvisible()
+    end
+end)
+
 -- ===== Event: กดโล้โก้เพื่อพับ/เรียก UI =====
 LogoButton.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
-    -- LogoButton ยังคงแสดงตลอด
 end)
+
+-- ===== เริ่มต้นเปิดใช้งาน Speed & Invisible ถ้าค่าเริ่มต้นเป็น true =====
+if State.SpeedHack then
+    enableSpeedLoop()
+end
+if State.Invisible then
+    enableInvisible()
+end
