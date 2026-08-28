@@ -1,9 +1,16 @@
 -- 1. Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
+
+local localPlayer = Players.LocalPlayer
+
+-- Camera Caching
+local camera = workspace.CurrentCamera
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    camera = workspace.CurrentCamera
+end)
 
 -- 2. Global States
 local State = {
@@ -31,7 +38,7 @@ end
 
 -- 4. Dynamic Camera Helper
 local function getCamera()
-    return Workspace.CurrentCamera
+    return camera -- ดึงค่าจากตัวแปร camera ที่ Cache ไว้แล้วตรงๆ ได้เลย
 end
 
 -- 5. FOV Circle Drawing Engine
@@ -70,6 +77,9 @@ end
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
     
+    local character = localPlayer and localPlayer.Character
+    if not character then return false end -- ป้องกัน Error ช่วงตัวละครยังไม่โหลด
+    
     local camera = getCamera()  
     local origin = camera.CFrame.Position  
     local destination = targetPart.Position  
@@ -77,10 +87,10 @@ local function isVisible(targetPart)
       
     local raycastParams = RaycastParams.new()  
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude  
-    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, camera}  
+    raycastParams.FilterDescendantsInstances = {character, camera}  
     raycastParams.IgnoreWater = true  
       
-    local result = Workspace:Raycast(origin, direction, raycastParams)  
+    local result = workspace:Raycast(origin, direction, raycastParams) -- แก้เป็น workspace ตัวพิมพ์เล็ก
       
     if result then  
         return result.Instance:IsDescendantOf(targetPart.Parent)  
