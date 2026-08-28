@@ -18,7 +18,8 @@ local State = {
     TeamCheck = true,
     WallCheck = false,
     Prediction = true,
-    BulletSpeed = 3000,
+    AutoBulletSpeed = true, -- ระบบตรวจจับความเร็วกระสุนตามปืนที่ถืออัตโนมัติ
+    BulletSpeed = 2000,
     Smoothness = 0.3,
     FOV = 90,
     ShowFOV = false,
@@ -31,7 +32,7 @@ local currentTarget = nil
 -- 3. Ping Helper Function
 local function getPing()
     if localPlayer then
-        return localPlayer:GetNetworkPing()
+        return localPlayer:GetNetworkPing() -- คืนค่าเป็นวินาที
     end
     return 0.05
 end
@@ -41,7 +42,35 @@ local function getCamera()
     return camera
 end
 
--- 5. FOV Circle Drawing Engine
+-- 5. ACS & Weapon Speed Auto Detection
+local function getEffectiveBulletSpeed()
+    if State.AutoBulletSpeed and localPlayer and localPlayer.Character then
+        local tool = localPlayer.Character:FindFirstChildOfClass("Tool")
+        if tool then
+            -- สแกนหา Module Config ของ ACS Engine / Tool General Settings
+            local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
+            if acsSettings and acsSettings:IsA("ModuleScript") then
+                local success, config = pcall(require, acsSettings)
+                if success and type(config) == "table" then
+                    local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed
+                    if type(speed) == "number" and speed > 0 then
+                        return speed
+                    end
+                end
+            end
+            -- สแกนหา Attribute ของตัว Tool
+            for name, value in pairs(tool:GetAttributes()) do
+                local lower = name:lower()
+                if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
+                    return value
+                end
+            end
+        end
+    end
+    return math.max(State.BulletSpeed or 2000, 1)
+end
+
+-- 6. FOV Circle Drawing Engine
 local FOVCircle = Drawing.new("Circle")
 FOVCircle.Thickness = 1.5
 FOVCircle.Color = Color3.fromRGB(255, 255, 255)
@@ -49,7 +78,7 @@ FOVCircle.Filled = false
 FOVCircle.Transparency = 0.7
 FOVCircle.Visible = false
 
--- 6. Target Validation Check
+-- 7. Target Validation Check
 local function isValidEnemy(player)
     if not player or not localPlayer or player == localPlayer or not player.Character then 
         return false 
@@ -77,21 +106,21 @@ local function isValidEnemy(player)
     return true
 end
 
--- 7. Wall Check Function
+-- 8. Wall Check Function
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
     
     local character = localPlayer and localPlayer.Character
     if not character then return false end
     
-    local camera = getCamera()  
-    local origin = camera.CFrame.Position  
+    local cam = getCamera()  
+    local origin = cam.CFrame.Position  
     local destination = targetPart.Position  
     local direction = destination - origin  
       
     local raycastParams = RaycastParams.new()  
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude  
-    raycastParams.FilterDescendantsInstances = {character, camera}  
+    raycastParams.FilterDescendantsInstances = {character, cam}  
     raycastParams.IgnoreWater = true  
       
     local result = workspace:Raycast(origin, direction, raycastParams)  
@@ -103,18 +132,18 @@ local function isVisible(targetPart)
     return false
 end
 
--- 8. Target Acquisition
+-- 9. Target Acquisition
 local function getClosestTarget()
     local closestPlayer = nil
     local shortestDist = State.FOV
-    local camera = getCamera()
-    local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    local cam = getCamera()
+    local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     
     for _, player in ipairs(Players:GetPlayers()) do  
         if isValidEnemy(player) then  
             local targetPart = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")  
             if targetPart and isVisible(targetPart) then  
-                local screenPoint, onScreen = camera:WorldToViewportPoint(targetPart.Position)  
+                local screenPoint, onScreen = cam:WorldToViewportPoint(targetPart.Position)  
                   
                 if onScreen then  
                     local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
@@ -131,35 +160,38 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 9. Advanced Dynamic Prediction Engine
+-- 10. Advanced Dynamic Prediction Engine (Optimized)
 local function getPredictedPosition(target)
-    if not target or not target.Character then return nil end
+    local char = target and target.Character
+    if not char then return nil end
     
-    local targetPart = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")  
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    local targetPart = char:FindFirstChild("Head") or rootPart
     if not targetPart then return nil end  
       
     local targetPos = targetPart.Position  
     
-    if State.Prediction then  
-        local rootPart = target.Character:FindFirstChild("HumanoidRootPart")  
-        if rootPart then  
-            local camera = getCamera()
-            local distance = (targetPos - camera.CFrame.Position).Magnitude
-            local currentPing = getPing()
-            
-            local timeToTarget = (distance / math.max(State.BulletSpeed, 1)) + (currentPing / 2)
-            local velocity = rootPart.AssemblyLinearVelocity  
-            
-            if velocity.Magnitude > 0.5 then
-                targetPos = targetPos + (velocity * timeToTarget)  
-            end
-        end  
+    if State.Prediction and rootPart then  
+        local cam = getCamera()
+        if not cam then return targetPos end
+        
+        local distance = (targetPos - cam.CFrame.Position).Magnitude
+        local currentPing = getPing()
+        local bulletSpeed = getEffectiveBulletSpeed()
+        
+        local timeToTarget = (distance / bulletSpeed) + (currentPing / 2)
+        local velocity = rootPart.AssemblyLinearVelocity  
+        
+        -- ใช้ Dot Product แทน Magnitude เพื่อประสิทธิภาพ (0.5^2 = 0.25)
+        if velocity:Dot(velocity) > 0.25 then
+            targetPos = targetPos + (velocity * timeToTarget)  
+        end
     end  
       
     return targetPos
 end
 
--- 10. ESP Management
+-- 11. ESP Management
 local function clearESP()
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then
@@ -218,10 +250,10 @@ local function processESP()
                         textLabel.BackgroundTransparency = 1
                         textLabel.Text = player.Name
                         textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        textLabel.TextSize = 14
+                        textLabel.Font = Enum.Font.SourceSansBold
                         textLabel.TextStrokeTransparency = 0
                         textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-                        textLabel.Font = Enum.Font.SourceSansBold
-                        textLabel.TextSize = 14
                         textLabel.Parent = nameTag
                     end
                 end
@@ -248,12 +280,12 @@ task.spawn(function()
     end
 end)
 
--- 11. Main Camera Engine
+-- 12. Main Camera Engine
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
 RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
-    local camera = getCamera()
+    local cam = getCamera()
     
-    FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)  
+    FOVCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)  
     FOVCircle.Radius = State.FOV  
     FOVCircle.Visible = State.ShowFOV  
       
@@ -266,23 +298,23 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     if currentTarget then  
         local targetPos = getPredictedPosition(currentTarget)  
         if targetPos then  
-            local targetCFrame = CFrame.lookAt(camera.CFrame.Position, targetPos)  
+            local targetCFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)  
             
             local lerpSpeed = math.clamp(State.Smoothness * 35, 1, 60)
             local alpha = 1 - math.exp(-lerpSpeed * deltaTime)
             
-            camera.CFrame = camera.CFrame:Lerp(targetCFrame, alpha)  
+            cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)  
         end  
     end
 end)
 
--- 12. Custom GUI Construction
+-- 13. Custom GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SnyX_CustomAimbotUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 
--- ===== ปุ่มโลโก้ (toggle หลัก) =====
+-- ===== ปุ่มโลโก้ (Toggle หลัก) =====
 local LogoButton = Instance.new("TextButton")
 LogoButton.Name = "LogoButton"
 LogoButton.Size = UDim2.new(0, 50, 0, 50)
@@ -510,16 +542,17 @@ local function createSlider(text, min, max, default, step, callback)
     end)
 end
 
--- สร้าง Toggle และ Slider
+-- สร้าง UI Toggles และ Sliders
 createToggle("Enable Aimbot", State.Aimbot, function(v) State.Aimbot = v end)
 createToggle("Show FOV Circle", State.ShowFOV, function(v) State.ShowFOV = v end)
 createToggle("Team Check", State.TeamCheck, function(v) State.TeamCheck = v end)
 createToggle("Wall Check", State.WallCheck, function(v) State.WallCheck = v end)
 createToggle("Prediction Engine", State.Prediction, function(v) State.Prediction = v end)
+createToggle("Auto Detect Weapon Speed", State.AutoBulletSpeed, function(v) State.AutoBulletSpeed = v end)
 createToggle("ESP Wallhack", State.ESP, function(v) State.ESP = v end)
 createToggle("ESP Username", State.ESPName, function(v) State.ESPName = v end)
 
-createSlider("Bullet Speed", 500, 5000, State.BulletSpeed, 100, function(v) State.BulletSpeed = v end)
+createSlider("Manual Bullet Speed", 500, 10000, State.BulletSpeed, 100, function(v) State.BulletSpeed = v end)
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
 createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
 
