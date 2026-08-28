@@ -31,7 +31,7 @@ local currentTarget = nil
 -- 3. Ping Helper Function
 local function getPing()
     if localPlayer then
-        return localPlayer:GetNetworkPing() -- คืนค่าเป็นวินาทีโดยตรง
+        return localPlayer:GetNetworkPing()
     end
     return 0.05
 end
@@ -69,7 +69,7 @@ local function isValidEnemy(player)
     if State.TeamCheck then  
         local myTeam = localPlayer.Team
         local targetTeam = player.Team
-        if myTeam and targetTeam and myTeam == targetTeam then  
+        if myTeam ~= nil and targetTeam ~= nil and myTeam == targetTeam then  
             return false  
         end  
     end  
