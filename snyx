@@ -31,14 +31,14 @@ local currentTarget = nil
 -- 3. Ping Helper Function
 local function getPing()
     if localPlayer then
-        return localPlayer:GetNetworkPing() -- คืนค่าเป็นวินาทีโดยตรง (เช่น 0.05 = 50ms)
+        return localPlayer:GetNetworkPing() -- คืนค่าเป็นวินาทีโดยตรง
     end
     return 0.05
 end
 
 -- 4. Dynamic Camera Helper
 local function getCamera()
-    return camera -- ดึงค่าจากตัวแปร camera ที่ Cache ไว้แล้วตรงๆ ได้เลย
+    return camera
 end
 
 -- 5. FOV Circle Drawing Engine
@@ -51,9 +51,11 @@ FOVCircle.Visible = false
 
 -- 6. Target Validation Check
 local function isValidEnemy(player)
-    if not player or player == LocalPlayer or not player.Character then return false end
+    if not player or not localPlayer or player == localPlayer or not player.Character then 
+        return false 
+    end
     
-    local humanoid = player.Character:FindFirstChild("Humanoid")  
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")  
     local rootPart = player.Character:FindFirstChild("HumanoidRootPart")  
       
     if not humanoid or not rootPart or humanoid.Health <= 0 then   
@@ -65,7 +67,9 @@ local function isValidEnemy(player)
     end  
     
     if State.TeamCheck then  
-        if player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then  
+        local myTeam = localPlayer.Team
+        local targetTeam = player.Team
+        if myTeam and targetTeam and myTeam == targetTeam then  
             return false  
         end  
     end  
@@ -78,7 +82,7 @@ local function isVisible(targetPart)
     if not State.WallCheck then return true end
     
     local character = localPlayer and localPlayer.Character
-    if not character then return false end -- ป้องกัน Error ช่วงตัวละครยังไม่โหลด
+    if not character then return false end
     
     local camera = getCamera()  
     local origin = camera.CFrame.Position  
@@ -90,7 +94,7 @@ local function isVisible(targetPart)
     raycastParams.FilterDescendantsInstances = {character, camera}  
     raycastParams.IgnoreWater = true  
       
-    local result = workspace:Raycast(origin, direction, raycastParams) -- แก้เป็น workspace ตัวพิมพ์เล็ก
+    local result = workspace:Raycast(origin, direction, raycastParams)  
       
     if result then  
         return result.Instance:IsDescendantOf(targetPart.Parent)  
@@ -114,7 +118,6 @@ local function getClosestTarget()
                   
                 if onScreen then  
                     local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
-                    
                     local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
                     
                     if effectiveDist < shortestDist then  
@@ -178,8 +181,7 @@ local function processESP()
     for _, player in ipairs(Players:GetPlayers()) do  
         local character = player.Character
         
-        -- ตรวจสอบว่ามี ตัวละคร + ไม่ใช่ตัวเราเอง + เป็นศัตรู
-        if character and player ~= LocalPlayer and isValidEnemy(player) then  
+        if character and player ~= localPlayer and isValidEnemy(player) then  
             -- Highlight ESP
             if State.ESP then
                 local highlight = character:FindFirstChild("ESP_Highlight")  
@@ -228,7 +230,6 @@ local function processESP()
                 if nameTag then nameTag:Destroy() end
             end
         else  
-            -- เคลียร์ ESP ออกหากไม่ใช่ศัตรู หรือตัวละครหายไป
             if character then  
                 local highlight = character:FindFirstChild("ESP_Highlight")  
                 if highlight then highlight:Destroy() end  
@@ -275,13 +276,13 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     end
 end)
 
--- 12. Custom GUI Construction (แก้แล้ว)
+-- 12. Custom GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SnyX_CustomAimbotUI"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+ScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 
--- ===== ปุ่มโล้โก้ (toggle หลัก) =====
+-- ===== ปุ่มโลโก้ (toggle หลัก) =====
 local LogoButton = Instance.new("TextButton")
 LogoButton.Name = "LogoButton"
 LogoButton.Size = UDim2.new(0, 50, 0, 50)
@@ -347,8 +348,6 @@ TitleText.TextSize = 13
 TitleText.Font = Enum.Font.SourceSansBold
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = TitleBar
-
--- (ไม่มีปุ่ม Collapse แล้ว)
 
 local ScrollFrame = Instance.new("ScrollingFrame")
 ScrollFrame.Size = UDim2.new(1, -10, 1, -45)
@@ -524,8 +523,7 @@ createSlider("Bullet Speed", 500, 5000, State.BulletSpeed, 100, function(v) Stat
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
 createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
 
--- ===== Event: กดโล้โก้เพื่อพับ/เรียก UI =====
+-- ===== Event: กดโลโก้เพื่อพับ/เรียก UI =====
 LogoButton.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
-    -- LogoButton ยังคงแสดงตลอด
 end)
