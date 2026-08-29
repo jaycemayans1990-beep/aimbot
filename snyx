@@ -5,6 +5,7 @@ local workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 
 local localPlayer = Players.LocalPlayer
+local espCache = {}
 
 -- Camera Caching
 local camera = workspace.CurrentCamera
@@ -192,93 +193,97 @@ local function getPredictedPosition(target)
 end
 
 -- 11. ESP Management
-local function clearESP()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then
-            local highlight = player.Character:FindFirstChild("ESP_Highlight")
-            if highlight then highlight:Destroy() end
-            
-            local nameTag = player.Character:FindFirstChild("ESP_NameTag")
-            if nameTag then nameTag:Destroy() end
-        end
+
+local function createESP(player, character)
+    local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 2)
+    if not head then return end
+
+    -- สร้าง Highlight เตรียมไว้
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESP_Highlight"
+    highlight.FillColor = Color3.fromRGB(180, 0, 255)
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+    highlight.FillTransparency = 0.15
+    highlight.OutlineTransparency = 0
+    highlight.Enabled = false
+    highlight.Parent = character
+
+    -- สร้าง BillboardGui เตรียมไว้
+    local nameTag = Instance.new("BillboardGui")
+    nameTag.Name = "ESP_NameTag"
+    nameTag.Adornee = head
+    nameTag.Size = UDim2.new(0, 150, 0, 30)
+    nameTag.StudsOffset = Vector3.new(0, 2, 0)
+    nameTag.AlwaysOnTop = true
+    nameTag.Enabled = false
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = player.Name
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.TextSize = 14
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextStrokeTransparency = 0
+    textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    textLabel.Parent = nameTag
+
+    nameTag.Parent = character
+
+    -- บันทึกเข้า Cache
+    espCache[player] = {
+        Highlight = highlight,
+        NameTag = nameTag,
+        Character = character
+    }
+end
+
+local function removeESP(player)
+    if espCache[player] then
+        if espCache[player].Highlight then espCache[player].Highlight:Destroy() end
+        if espCache[player].NameTag then espCache[player].NameTag:Destroy() end
+        espCache[player] = nil
     end
 end
 
 local function processESP()
-    if not State.ESP and not State.ESPName then
-        clearESP()
-        return
-    end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= localPlayer then
+            local character = player.Character
+            
+            if character and character:FindFirstChild("HumanoidRootPart") then
+                -- ถ้ายังไม่มี Cache หรือผู้เล่นเกิดใหม่ (Character เปลี่ยน) ให้สร้าง Object ใหม่
+                if not espCache[player] or espCache[player].Character ~= character then
+                    removeESP(player)
+                    createESP(player, character)
+                end
 
-    for _, player in ipairs(Players:GetPlayers()) do  
-        local character = player.Character
-        
-        if character and player ~= localPlayer and isValidEnemy(player) then  
-            -- Highlight ESP
-            if State.ESP then
-                local highlight = character:FindFirstChild("ESP_Highlight")  
-                if not highlight then  
-                    highlight = Instance.new("Highlight")  
-                    highlight.Name = "ESP_Highlight"  
-                    highlight.FillColor = Color3.fromRGB(180, 0, 255)
-                    highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
-                    highlight.FillTransparency = 0.15
-                    highlight.OutlineTransparency = 0
-                    highlight.Parent = character
-                end  
-            else
-                local highlight = character:FindFirstChild("ESP_Highlight")  
-                if highlight then highlight:Destroy() end  
-            end
-
-            -- Username ESP
-            if State.ESPName then
-                local head = character:FindFirstChild("Head")
-                if head then
-                    local nameTag = character:FindFirstChild("ESP_NameTag")
-                    if not nameTag then
-                        nameTag = Instance.new("BillboardGui")
-                        nameTag.Name = "ESP_NameTag"
-                        nameTag.Adornee = head
-                        nameTag.Size = UDim2.new(0, 150, 0, 30)
-                        nameTag.StudsOffset = Vector3.new(0, 2, 0)
-                        nameTag.AlwaysOnTop = true
-                        nameTag.Parent = character
-
-                        local textLabel = Instance.new("TextLabel")
-                        textLabel.Size = UDim2.new(1, 0, 1, 0)
-                        textLabel.BackgroundTransparency = 1
-                        textLabel.Text = player.Name
-                        textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-                        textLabel.TextSize = 14
-                        textLabel.Font = Enum.Font.SourceSansBold
-                        textLabel.TextStrokeTransparency = 0
-                        textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-                        textLabel.Parent = nameTag
-                    end
+                local cache = espCache[player]
+                if cache then
+                    local isEnemy = isValidEnemy(player)
+                    
+                    -- เปิด/ปิด การแสดงผลผ่าน Enabled (ลื่นขึ้นและใช้เครื่องน้อยลงมาก)
+                    cache.Highlight.Enabled = State.ESP and isEnemy
+                    cache.NameTag.Enabled = State.ESPName and isEnemy
                 end
             else
-                local nameTag = character:FindFirstChild("ESP_NameTag")
-                if nameTag then nameTag:Destroy() end
+                -- ลบ Cache เมื่อตัวละครตายหรือไม่อยู่ในแมพ
+                removeESP(player)
             end
-        else  
-            if character then  
-                local highlight = character:FindFirstChild("ESP_Highlight")  
-                if highlight then highlight:Destroy() end  
-
-                local nameTag = character:FindFirstChild("ESP_NameTag")
-                if nameTag then nameTag:Destroy() end
-            end  
-        end  
+        end
     end
 end
+
+-- เคลียร์ Cache เมื่อผู้เล่นออกจากเกม
+Players.PlayerRemoving:Connect(removeESP)
 
 task.spawn(function()
     while true do
         processESP()
-        task.wait(0.1)
+        task.wait(0.05) -- ปรับระยะเวลาให้เหมาะสมกับการอัปเดต
     end
 end)
+
 
 -- 12. Main Camera Engine
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
