@@ -280,7 +280,7 @@ Players.PlayerRemoving:Connect(removeESP)
 task.spawn(function()
     while true do
         processESP()
-        task.wait(0.05) -- ปรับระยะเวลาให้เหมาะสมกับการอัปเดต
+        task.wait(0.1) -- ปรับระยะเวลาให้เหมาะสมกับการอัปเดต
     end
 end)
 
@@ -305,10 +305,14 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
         if targetPos then  
             local targetCFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)  
             
-            local lerpSpeed = math.clamp(State.Smoothness * 35, 1, 60)
-            local alpha = 1 - math.exp(-lerpSpeed * deltaTime)
-            
-            cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)  
+            -- [นำชุดโค้ดใหม่มาใส่แทนที่ตรงนี้]
+            if State.Smoothness >= 0.99 then
+                cam.CFrame = targetCFrame
+            else
+                local speed = math.clamp(State.Smoothness, 0.01, 0.98)
+                local alpha = 1 - ((1 - speed) ^ (deltaTime * 60))
+                cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)
+            end
         end  
     end
 end)
