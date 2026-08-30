@@ -107,30 +107,47 @@ local function isValidEnemy(player)
     return true
 end
 
--- 8. Wall Check Function
+-- 8. Wall Check Function (Optimized + Nil Checks)
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+raycastParams.IgnoreWater = true
+
+-- Reuse table ตัวเดียว ลด GC
+local filterList = {}
+
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
-    
+
+    -- !! เช็คครบตามที่แกสั่ง !!
+    if not targetPart or not targetPart.Parent then return false end
+
     local character = localPlayer and localPlayer.Character
     if not character then return false end
+
+    local cam = getCamera()
+    if not cam then return false end
+
+    -- อัปเดตค่าใน Lua table
+    filterList[1] = character
     
-    local cam = getCamera()  
-    local origin = cam.CFrame.Position  
-    local destination = targetPart.Position  
-    local direction = destination - origin  
-      
-    local raycastParams = RaycastParams.new()  
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude  
-    raycastParams.FilterDescendantsInstances = {character, cam}  
-    raycastParams.IgnoreWater = true  
-      
-    local result = workspace:Raycast(origin, direction, raycastParams)  
-      
-    if result then  
-        return result.Instance:IsDescendantOf(targetPart.Parent)  
-    end  
-      
-    return false
+    -- !! สำคัญ: Assign กลับเข้า C++ Object ทุกครั้ง เพื่อให้ Engine ก็อปค่าล่าสุดไปใช้ !!
+    raycastParams.FilterDescendantsInstances = filterList
+
+    local origin = cam.CFrame.Position
+    local destination = targetPart.Position
+    local direction = destination - origin
+
+    local result = workspace:Raycast(origin, direction, raycastParams)
+
+    if result then
+        local targetModel = targetPart:FindFirstAncestorOfClass("Model")
+        if targetModel and result.Instance:IsDescendantOf(targetModel) then
+            return true
+        end
+        return false
+    end
+
+    return true
 end
 
 -- 9. Target Acquisition
