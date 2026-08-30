@@ -19,21 +19,22 @@ local State = {
     TeamCheck = true,
     WallCheck = false,
     Prediction = true,
-    AutoBulletSpeed = true, -- ระบบตรวจจับความเร็วกระสุนตามปืนที่ถืออัตโนมัติ
-    BulletSpeed = 5000,
+    AutoBulletSpeed = true,
+    BulletSpeed = 2000,
     Smoothness = 0.3,
-    FOV = 120,
+    FOV = 90,
     ShowFOV = false,
     ESP = true,
     ESPName = false
 }
 
 local currentTarget = nil
+local cachedBulletSpeed = 2000
 
 -- 3. Ping Helper Function
 local function getPing()
     if localPlayer then
-        return localPlayer:GetNetworkPing() -- คืนค่าเป็นวินาที
+        return localPlayer:GetNetworkPing()
     end
     return 0.05
 end
@@ -43,32 +44,56 @@ local function getCamera()
     return camera
 end
 
--- 5. ACS & Weapon Speed Auto Detection
-local function getEffectiveBulletSpeed()
-    if State.AutoBulletSpeed and localPlayer and localPlayer.Character then
-        local tool = localPlayer.Character:FindFirstChildOfClass("Tool")
-        if tool then
-            -- สแกนหา Module Config ของ ACS Engine / Tool General Settings
-            local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
-            if acsSettings and acsSettings:IsA("ModuleScript") then
-                local success, config = pcall(require, acsSettings)
-                if success and type(config) == "table" then
-                    local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed
-                    if type(speed) == "number" and speed > 0 then
-                        return speed
-                    end
-                end
-            end
-            -- สแกนหา Attribute ของตัว Tool
-            for name, value in pairs(tool:GetAttributes()) do
-                local lower = name:lower()
-                if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
-                    return value
+-- 5. ACS & Weapon Speed Auto Detection (Optimized with Event Caching)
+local function updateBulletSpeed()
+    if not State.AutoBulletSpeed then
+        cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+        return
+    end
+
+    local char = localPlayer and localPlayer.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if tool then
+        local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
+        if acsSettings and acsSettings:IsA("ModuleScript") then
+            local success, config = pcall(require, acsSettings)
+            if success and type(config) == "table" then
+                local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed
+                if type(speed) == "number" and speed > 0 then
+                    cachedBulletSpeed = speed
+                    return
                 end
             end
         end
+        for name, value in pairs(tool:GetAttributes()) do
+            local lower = name:lower()
+            if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
+                cachedBulletSpeed = value
+                return
+            end
+        end
     end
-    return math.max(State.BulletSpeed or 2000, 1)
+    cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+end
+
+local function setupCharacterSpeedListener(char)
+    if not char then return end
+    char.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            task.defer(updateBulletSpeed)
+        end
+    end)
+    char.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then
+            task.defer(updateBulletSpeed)
+        end
+    end)
+    updateBulletSpeed()
+end
+
+if localPlayer then
+    if localPlayer.Character then setupCharacterSpeedListener(localPlayer.Character) end
+    localPlayer.CharacterAdded:Connect(setupCharacterSpeedListener)
 end
 
 -- 6. FOV Circle Drawing Engine
@@ -107,18 +132,16 @@ local function isValidEnemy(player)
     return true
 end
 
--- 8. Wall Check Function (Optimized + Nil Checks)
+-- 8. Wall Check Function (Optimized)
 local raycastParams = RaycastParams.new()
 raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 raycastParams.IgnoreWater = true
 
--- Reuse table ตัวเดียว ลด GC
 local filterList = {}
 
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
 
-    -- !! เช็คครบตามที่แกสั่ง !!
     if not targetPart or not targetPart.Parent then return false end
 
     local character = localPlayer and localPlayer.Character
@@ -127,10 +150,7 @@ local function isVisible(targetPart)
     local cam = getCamera()
     if not cam then return false end
 
-    -- อัปเดตค่าใน Lua table
     filterList[1] = character
-    
-    -- !! สำคัญ: Assign กลับเข้า C++ Object ทุกครั้ง เพื่อให้ Engine ก็อปค่าล่าสุดไปใช้ !!
     raycastParams.FilterDescendantsInstances = filterList
 
     local origin = cam.CFrame.Position
@@ -150,7 +170,7 @@ local function isVisible(targetPart)
     return true
 end
 
--- 9. Target Acquisition
+-- 9. Target Acquisition (Optimized: Check FOV first, then Raycast)
 local function getClosestTarget()
     local closestPlayer = nil
     local shortestDist = State.FOV
@@ -160,7 +180,7 @@ local function getClosestTarget()
     for _, player in ipairs(Players:GetPlayers()) do  
         if isValidEnemy(player) then  
             local targetPart = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")  
-            if targetPart and isVisible(targetPart) then  
+            if targetPart then  
                 local screenPoint, onScreen = cam:WorldToViewportPoint(targetPart.Position)  
                   
                 if onScreen then  
@@ -168,8 +188,11 @@ local function getClosestTarget()
                     local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
                     
                     if effectiveDist < shortestDist then  
-                        shortestDist = effectiveDist  
-                        closestPlayer = player  
+                        -- สลับมาเช็ค isVisible เฉพาะตอนที่อยู่ในระยะ FOV เท่านั้น
+                        if isVisible(targetPart) then
+                            shortestDist = effectiveDist  
+                            closestPlayer = player  
+                        end
                     end  
                 end  
             end  
@@ -178,7 +201,7 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 10. Advanced Dynamic Prediction Engine (Optimized)
+-- 10. Advanced Dynamic Prediction Engine (Optimized: Use Cached Bullet Speed)
 local function getPredictedPosition(target)
     local char = target and target.Character
     if not char then return nil end
@@ -195,12 +218,11 @@ local function getPredictedPosition(target)
         
         local distance = (targetPos - cam.CFrame.Position).Magnitude
         local currentPing = getPing()
-        local bulletSpeed = getEffectiveBulletSpeed()
+        local bulletSpeed = cachedBulletSpeed
         
         local timeToTarget = (distance / bulletSpeed) + (currentPing / 2)
         local velocity = rootPart.AssemblyLinearVelocity  
         
-        -- ใช้ Dot Product แทน Magnitude เพื่อประสิทธิภาพ (0.5^2 = 0.25)
         if velocity:Dot(velocity) > 0.25 then
             targetPos = targetPos + (velocity * timeToTarget)  
         end
@@ -210,12 +232,10 @@ local function getPredictedPosition(target)
 end
 
 -- 11. ESP Management
-
 local function createESP(player, character)
     local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 2)
     if not head then return end
 
-    -- สร้าง Highlight เตรียมไว้
     local highlight = Instance.new("Highlight")
     highlight.Name = "ESP_Highlight"
     highlight.FillColor = Color3.fromRGB(180, 0, 255)
@@ -225,7 +245,6 @@ local function createESP(player, character)
     highlight.Enabled = false
     highlight.Parent = character
 
-    -- สร้าง BillboardGui เตรียมไว้
     local nameTag = Instance.new("BillboardGui")
     nameTag.Name = "ESP_NameTag"
     nameTag.Adornee = head
@@ -247,7 +266,6 @@ local function createESP(player, character)
 
     nameTag.Parent = character
 
-    -- บันทึกเข้า Cache
     espCache[player] = {
         Highlight = highlight,
         NameTag = nameTag,
@@ -269,7 +287,6 @@ local function processESP()
             local character = player.Character
             
             if character and character:FindFirstChild("HumanoidRootPart") then
-                -- ถ้ายังไม่มี Cache หรือผู้เล่นเกิดใหม่ (Character เปลี่ยน) ให้สร้าง Object ใหม่
                 if not espCache[player] or espCache[player].Character ~= character then
                     removeESP(player)
                     createESP(player, character)
@@ -278,29 +295,24 @@ local function processESP()
                 local cache = espCache[player]
                 if cache then
                     local isEnemy = isValidEnemy(player)
-                    
-                    -- เปิด/ปิด การแสดงผลผ่าน Enabled (ลื่นขึ้นและใช้เครื่องน้อยลงมาก)
                     cache.Highlight.Enabled = State.ESP and isEnemy
                     cache.NameTag.Enabled = State.ESPName and isEnemy
                 end
             else
-                -- ลบ Cache เมื่อตัวละครตายหรือไม่อยู่ในแมพ
                 removeESP(player)
             end
         end
     end
 end
 
--- เคลียร์ Cache เมื่อผู้เล่นออกจากเกม
 Players.PlayerRemoving:Connect(removeESP)
 
 task.spawn(function()
     while true do
         processESP()
-        task.wait(0.1) -- ปรับระยะเวลาให้เหมาะสมกับการอัปเดต
+        task.wait(0.1)
     end
 end)
-
 
 -- 12. Main Camera Engine
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
@@ -322,7 +334,6 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
         if targetPos then  
             local targetCFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)  
             
-            -- [นำชุดโค้ดใหม่มาใส่แทนที่ตรงนี้]
             if State.Smoothness >= 0.99 then
                 cam.CFrame = targetCFrame
             else
@@ -340,7 +351,6 @@ ScreenGui.Name = "SnyX_CustomAimbotUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 
--- ===== ปุ่มโลโก้ (Toggle หลัก) =====
 local LogoButton = Instance.new("TextButton")
 LogoButton.Name = "LogoButton"
 LogoButton.Size = UDim2.new(0, 50, 0, 50)
@@ -365,7 +375,6 @@ LogoStroke.Color = Color3.fromRGB(180, 0, 255)
 LogoStroke.Thickness = 2
 LogoStroke.Parent = LogoButton
 
--- ===== Main Frame (UI หลัก) =====
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, 290, 0, 360)
@@ -533,6 +542,7 @@ local function createSlider(text, min, max, default, step, callback)
     fillCorner.Parent = sliderFill
 
     local dragging = false
+    local moveConnection, releaseConnection
 
     local function updateSlider(input)
         local barAbsPos = sliderBar.AbsolutePosition.X
@@ -552,37 +562,47 @@ local function createSlider(text, min, max, default, step, callback)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             updateSlider(input)
-        end
-    end)
 
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            updateSlider(input)
-        end
-    end)
+            if moveConnection then moveConnection:Disconnect() end
+            if releaseConnection then releaseConnection:Disconnect() end
 
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
+            moveConnection = UserInputService.InputChanged:Connect(function(moveInput)
+                if dragging and (moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch) then
+                    updateSlider(moveInput)
+                end
+            end)
+
+            releaseConnection = UserInputService.InputEnded:Connect(function(releaseInput)
+                if releaseInput.UserInputType == Enum.UserInputType.MouseButton1 or releaseInput.UserInputType == Enum.UserInputType.Touch then
+                    dragging = false
+                    if moveConnection then moveConnection:Disconnect() end
+                    if releaseConnection then releaseConnection:Disconnect() end
+                end
+            end)
         end
     end)
 end
 
--- สร้าง UI Toggles และ Sliders
+-- UI Controls Construction
 createToggle("Enable Aimbot", State.Aimbot, function(v) State.Aimbot = v end)
 createToggle("Show FOV Circle", State.ShowFOV, function(v) State.ShowFOV = v end)
 createToggle("Team Check", State.TeamCheck, function(v) State.TeamCheck = v end)
 createToggle("Wall Check", State.WallCheck, function(v) State.WallCheck = v end)
 createToggle("Prediction Engine", State.Prediction, function(v) State.Prediction = v end)
-createToggle("Auto Detect Weapon Speed", State.AutoBulletSpeed, function(v) State.AutoBulletSpeed = v end)
+createToggle("Auto Detect Weapon Speed", State.AutoBulletSpeed, function(v) 
+    State.AutoBulletSpeed = v 
+    updateBulletSpeed()
+end)
 createToggle("ESP Wallhack", State.ESP, function(v) State.ESP = v end)
 createToggle("ESP Username", State.ESPName, function(v) State.ESPName = v end)
 
-createSlider("Manual Bullet Speed", 500, 10000, State.BulletSpeed, 100, function(v) State.BulletSpeed = v end)
+createSlider("Manual Bullet Speed", 500, 10000, State.BulletSpeed, 100, function(v) 
+    State.BulletSpeed = v 
+    updateBulletSpeed()
+end)
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
 createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
 
--- ===== Event: กดโลโก้เพื่อพับ/เรียก UI =====
 LogoButton.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
