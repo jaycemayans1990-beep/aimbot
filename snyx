@@ -292,15 +292,10 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
 
--- 11. ESP Management (GPU Optimized Engine v2.0 - 60Hz Heartbeat)
-local MAX_ESP_DISTANCE = 1500
-local UPDATE_RATE = 60
-local lastUpdateTime = 0
+-- 11. ESP Management (GPU Optimized v2.4 - Clean & Direct @ 3000 Studs)
+local MAX_ESP_DISTANCE = 3000 -- ระยะมองเห็น 3000 Studs (ครอบคลุมทั้งแมพ)
 
 local function createESP(player, character)
-    local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 2)
-    if not head then return end
-
     local highlight = Instance.new("Highlight")
     highlight.Name = "ESP_Highlight"
     highlight.FillColor = Color3.fromRGB(180, 0, 255)
@@ -310,39 +305,17 @@ local function createESP(player, character)
     highlight.Enabled = false
     highlight.Parent = character
 
-    local nameTag = Instance.new("BillboardGui")
-    nameTag.Name = "ESP_NameTag"
-    nameTag.Adornee = head
-    nameTag.Size = UDim2.new(0, 150, 0, 30)
-    nameTag.StudsOffset = Vector3.new(0, 2, 0)
-    nameTag.AlwaysOnTop = true
-    nameTag.MaxDistance = MAX_ESP_DISTANCE
-    nameTag.Enabled = false
-
-    local textLabel = Instance.new("TextLabel")
-    textLabel.Size = UDim2.new(1, 0, 1, 0)
-    textLabel.BackgroundTransparency = 1
-    textLabel.Text = player.Name
-    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    textLabel.TextSize = 14
-    textLabel.Font = Enum.Font.SourceSansBold
-    textLabel.TextStrokeTransparency = 0
-    textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    textLabel.Parent = nameTag
-
-    nameTag.Parent = character
-
     espCache[player] = {
         Highlight = highlight,
-        NameTag = nameTag,
         Character = character
     }
 end
 
 local function removeESP(player)
     if espCache[player] then
-        if espCache[player].Highlight then espCache[player].Highlight:Destroy() end
-        if espCache[player].NameTag then espCache[player].NameTag:Destroy() end
+        if espCache[player].Highlight then 
+            espCache[player].Highlight:Destroy() 
+        end
         espCache[player] = nil
     end
 end
@@ -353,7 +326,6 @@ local function processESP()
 
     local camPos = cam.CFrame.Position
     local stateESP = State and State.ESP
-    local stateESPName = State and State.ESPName
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == localPlayer then continue end
@@ -368,22 +340,17 @@ local function processESP()
             end
 
             local cache = espCache[player]
-            if cache then
-                local isEnemy = isValidEnemy(player)
-                
-                if isEnemy and (stateESP or stateESPName) then
+            if cache and cache.Highlight then
+                if stateESP and isValidEnemy(player) then
                     local dist = (rootPart.Position - camPos).Magnitude
                     if dist <= MAX_ESP_DISTANCE then
                         local _, onScreen = cam:WorldToViewportPoint(rootPart.Position)
-                        cache.Highlight.Enabled = stateESP and onScreen
-                        cache.NameTag.Enabled = stateESPName and onScreen
+                        cache.Highlight.Enabled = onScreen
                     else
                         cache.Highlight.Enabled = false
-                        cache.NameTag.Enabled = false
                     end
                 else
                     cache.Highlight.Enabled = false
-                    cache.NameTag.Enabled = false
                 end
             end
         else
@@ -394,13 +361,8 @@ end
 
 Players.PlayerRemoving:Connect(removeESP)
 
-RunService.Heartbeat:Connect(function()
-    local currentTime = os.clock()
-    if currentTime - lastUpdateTime >= (1 / UPDATE_RATE) then
-        processESP()
-        lastUpdateTime = currentTime
-    end
-end)
+RunService.Heartbeat:Connect(processESP)
+
 
 -- 12. Main Camera Engine
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
