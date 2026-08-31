@@ -232,6 +232,7 @@ local function getClosestTarget()
     return closestPlayer
 end
 
+
 -- 10. Pure Physics Dynamic Prediction Engine (v3.0)
 local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     if not target then return nil end
@@ -254,9 +255,11 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local g = bulletGravity or cachedBulletGravity or 0
     local pingSec = ((getPing() or 0) / 2000.0)
     
-    local targetVel = rootPart.AssemblyLinearVelocity
+    local rawVel = rootPart.AssemblyLinearVelocity
+    local targetVel = Vector3.new(rawVel.X, math.clamp(rawVel.Y, -80, 80), rawVel.Z)
     local targetAccel = Vector3.zero
-    if humanoid then
+    
+    if humanoid then -- แก้ไขไวยากรณ์ตรงนี้เรียบร้อยแล้ว
         local state = humanoid:GetState()
         local isAir = (state == Enum.HumanoidStateType.Freefall or
                        state == Enum.HumanoidStateType.Jumping or
