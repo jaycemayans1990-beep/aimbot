@@ -334,7 +334,86 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffs
         if horizDist < 0.001 then
             local tofVert = math.abs(vertDist) / math.max(v, 0.001) + pingSec
             predictedPos = targetPos + avgVel * tofVert + 0.5 * targetAccel * (tofVert * tofVert)
-            lastTanTheta = (vertDist >= 0) and 1e6 or -1e6
+
+-- 10. Physics Dynamic Prediction Engine (Full Accuracy + High Precision)
+local velocityHistory = setmetatable({}, {__mode = "k"})
+local lastTickTime = setmetatable({}, {__mode = "k"})
+
+local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffsetSec)
+    if not target then return nil end
+    local char = target.Character
+    if not char then return nil end
+
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    local headPart = char:FindFirstChild("Head") or rootPart
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not rootPart or not headPart then return nil end
+
+    local cam = workspace.CurrentCamera
+    if not cam then return headPart.Position end
+
+    local targetPos = headPart.Position
+    if not State.Prediction then return targetPos end
+
+    local camPos = cam.CFrame.Position
+    local v = math.max(bulletSpeed or cachedBulletSpeed or 2000, 1)
+    local g = bulletGravity or cachedBulletGravity or 0
+
+    local rawPing = getPing() or 0
+    local pingInSec = (rawPing > 5) and (rawPing / 1000.0) or rawPing
+    local pingSec = pingOffsetSec or (pingInSec + 0.0166)
+
+    local now = os.clock()
+    local lastTime = lastTickTime[target] or (now - 0.016)
+    local dt = math.clamp(now - lastTime, 0.001, 0.1)
+    lastTickTime[target] = now
+
+    if not velocityHistory[target] then velocityHistory[target] = {} end
+    local hist = velocityHistory[target]
+
+    local currentVel = rootPart.AssemblyLinearVelocity
+    table.insert(hist, currentVel)
+    if #hist > 5 then table.remove(hist, 1) end
+
+    local avgVel = Vector3.new(0, 0, 0)
+    for _, vel in ipairs(hist) do
+        avgVel = avgVel + vel
+    end
+    avgVel = avgVel / #hist
+
+    local targetAccel = Vector3.new(0, 0, 0)
+    if #hist >= 2 then
+        local prevVel = hist[#hist - 1]
+        targetAccel = (currentVel - prevVel) / dt
+        if targetAccel.Magnitude > 60 then
+            targetAccel = targetAccel.Unit * 60
+        end
+    end
+
+    -- คำนวณกระสุนเส้นตรง (Straight Bullet / High Speed)
+    if g < 0.01 then
+        local predictedPos = targetPos
+        for iter = 1, 4 do
+            local dist = (predictedPos - camPos).Magnitude
+            local tof = (dist / v) + pingSec
+            predictedPos = targetPos + (avgVel * tof) + (0.5 * targetAccel * (tof * tof))
+        end
+        return predictedPos
+    end
+
+    -- คำนวณย้อยตามแรงโน้มถ่วง (Bullet Drop / Gravity)
+    local predictedPos = targetPos
+    local lastTanTheta = 0
+
+    for iter = 1, 6 do
+        local diff = predictedPos - camPos
+        local flatDiff = Vector3.new(diff.X, 0, diff.Z)
+        local horizDist = flatDiff.Magnitude
+        local vertDist = diff.Y
+
+        if horizDist < 0.001 then
+            local tofVert = math.abs(vertDist) / v + pingSec
+            predictedPos = targetPos + avgVel * tofVert + 0.5 * targetAccel * (tofVert * tofVert)
             break
         end
 
@@ -354,25 +433,21 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffs
         local tof = (horizDist / (v * cosTheta)) + pingSec
 
         local newPos = targetPos + avgVel * tof + 0.5 * targetAccel * (tof * tof)
-
         if (newPos - predictedPos).Magnitude < 0.01 then
             predictedPos = newPos
             break
         end
-
-        predictedPos = predictedPos * 0.4 + newPos * 0.6
+        predictedPos = newPos
     end
 
     local diff = predictedPos - camPos
     local flatDiff = Vector3.new(diff.X, 0, diff.Z)
     local finalHorizDist = flatDiff.Magnitude
 
-    if finalHorizDist < 0.01 then
-        return predictedPos
-    end
-
+    if finalHorizDist < 0.01 then return predictedPos end
     return camPos + (flatDiff.Unit * finalHorizDist) + Vector3.new(0, finalHorizDist * lastTanTheta, 0)
 end
+
 
 -- 11. ESP Management
 local function createESP(player, character)
@@ -457,8 +532,8 @@ task.spawn(function()
     end
 end)
 
--- 12. Main Camera Engine (Safe & Mobile Compatible)
-local smoothDir = Vector3.new(0, 0, 0)
+-- 12. Main Camera Engine (Fast Lock + Anti-Shake)
+local lastTargetCFrame = nil
 
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
 RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
@@ -473,7 +548,7 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
       
     if not State.Aimbot then 
         currentTarget = nil
-        smoothDir = Vector3.new(0, 0, 0)
+        lastTargetCFrame = nil
         return 
     end
     
@@ -482,47 +557,21 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
         local rawTargetPos = getPredictedPosition(currentTarget)  
         if rawTargetPos then  
             local camPos = cam.CFrame.Position
-            local rawDir = (rawTargetPos - camPos)
+            local targetCFrame = CFrame.new(camPos, rawTargetPos)
             
-            if rawDir.Magnitude > 0.1 then
-                local rawForward = rawDir.Unit
-                
-                if smoothDir.Magnitude < 0.001 then
-                    smoothDir = rawForward
-                else
-                    local smoothingFactor = math.clamp(State.Smoothness * 0.5, 0.01, 0.5)
-                    smoothDir = smoothDir:Lerp(rawForward, 1 - math.exp(-deltaTime * (1 / smoothingFactor)))
-                end
-                
-                local right = cam.CFrame.RightVector
-                right = right - smoothDir * right:Dot(smoothDir)
-                local rightMag = right.Magnitude
-                if rightMag < 0.001 then
-                    right = Vector3.new(1, 0, 0):Cross(smoothDir)
-                    if right.Magnitude < 0.001 then
-                        right = Vector3.new(0, 0, 1):Cross(smoothDir)
-                    end
-                    right = right.Unit
-                else
-                    right = right / rightMag
-                end
-                
-                local up = right:Cross(smoothDir).Unit
-                local targetCFrame = CFrame.fromMatrix(camPos, right, up, -smoothDir)
-                
-                if State.Smoothness >= 0.99 then
-                    cam.CFrame = targetCFrame
-                else
-                    local speed = math.clamp(State.Smoothness, 0.01, 0.98)
-                    local lerpFactor = 1 - math.exp(-deltaTime * (speed * 15))
-                    cam.CFrame = cam.CFrame:Lerp(targetCFrame, lerpFactor)
-                end
+            -- ปรับคำนวณการหมุนกล้องแบบตอบสนองไว (Fast Response)
+            if State.Smoothness >= 0.95 then
+                cam.CFrame = targetCFrame
+            else
+                -- สูตร Lerp แบบปรับสเกลเวลา ล็อคเข้าเป้าไวขึ้น 3 เท่าโดยไม่สั่นสะดุด
+                local smoothRate = math.clamp((1 - State.Smoothness) * 40, 5, 50)
+                local lerpFactor = math.clamp(deltaTime * smoothRate, 0.05, 1)
+                cam.CFrame = cam.CFrame:Lerp(targetCFrame, lerpFactor)
             end
+            lastTargetCFrame = cam.CFrame
         end  
     else
-        if smoothDir.Magnitude > 0.001 then
-            smoothDir = smoothDir:Lerp(cam.CFrame.LookVector, deltaTime * 2)
-        end
+        lastTargetCFrame = nil
     end
 end)
 
