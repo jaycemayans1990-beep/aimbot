@@ -33,11 +33,23 @@ local currentTarget = nil
 local cachedBulletSpeed = 2000
 local cachedBulletGravity = 0 
 
--- 3. Ping Helper Function
+-- 3. Ping Helper Function (Safe Check)
 local function getPing()
-    if localPlayer then
-        return localPlayer:GetNetworkPing()
+    if localPlayer and typeof(localPlayer.GetNetworkPing) == "function" then
+        local success, ping = pcall(function() return localPlayer:GetNetworkPing() end)
+        if success and type(ping) == "number" then 
+            return ping 
+        end
     end
+
+    -- Fallback ดึงค่าจาก Stats Service หาก Executor ไม่รองรับ GetNetworkPing
+    local success, statsPing = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+    end)
+    if success and statsPing then
+        return statsPing
+    end
+
     return 0.05
 end
 
@@ -129,13 +141,19 @@ if localPlayer then
     localPlayer.CharacterAdded:Connect(setupCharacterSpeedListener)
 end
 
--- 6. FOV Circle Drawing Engine
-local FOVCircle = Drawing.new("Circle")
-FOVCircle.Thickness = 1.5
-FOVCircle.Color = Color3.fromRGB(255, 255, 255)
-FOVCircle.Filled = false
-FOVCircle.Transparency = 0.7
-FOVCircle.Visible = false
+-- 6. FOVCircle Engine (Safe Check)
+local FOVCircle = nil
+if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
+    local success, circle = pcall(function() return Drawing.new("Circle") end)
+    if success and circle then
+        FOVCircle = circle
+        FOVCircle.Thickness = 1.5
+        FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+        FOVCircle.Filled = false
+        FOVCircle.Transparency = 0.7
+        FOVCircle.Visible = false
+    end
+end
 
 -- 7. Target Validation Check
 local function isValidEnemy(player)
@@ -521,7 +539,7 @@ task.spawn(function()
     end
 end)
 
--- 12. Main Camera Engine (Exponential Smoothing + Anti-Shake)
+-- 12. Main Camera Engine (Exponential Smoothing + Anti-Shake + Safe FOV)
 local smoothDir = Vector3.zero
 
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
@@ -529,9 +547,12 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     local cam = getCamera()
     if not cam then return end
 
-    FOVCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)  
-    FOVCircle.Radius = State.FOV  
-    FOVCircle.Visible = State.ShowFOV  
+    -- Safe Check: อัปเดต FOV เฉพาะเมื่อ Executor รองรับ Drawing API
+    if FOVCircle then
+        FOVCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)  
+        FOVCircle.Radius = State.FOV  
+        FOVCircle.Visible = State.ShowFOV  
+    end
       
     if not State.Aimbot then 
         currentTarget = nil
@@ -587,6 +608,7 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
         end
     end
 end)
+
 
 -- 13. Custom GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
