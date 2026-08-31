@@ -44,51 +44,88 @@ local function getCamera()
     return camera
 end
 
--- 5. ACS & Weapon Speed Auto Detection (Optimized with Event Caching)
-local function updateBulletSpeed()
+-- 5. ACS & Weapon Stats Auto Detection System (Speed & Gravity)
+local cachedBulletGravity = 0 -- ค่าแรงโน้มถ่วงตั้งต้น (0 = ยิงตรง)
+
+local function updateWeaponStats()
     if not State.AutoBulletSpeed then
         cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+        cachedBulletGravity = State.BulletGravity or 0
         return
     end
 
     local char = localPlayer and localPlayer.Character
     local tool = char and char:FindFirstChildOfClass("Tool")
+    
     if tool then
+        local toolName = tool.Name:lower()
+        -- เช็คว่าปืนนี้เป็นพวก RPG / Rocket / Grenade หรือไม่
+        local isLauncher = toolName:find("rpg") or toolName:find("rocket") or toolName:find("launcher") or toolName:find("grenade") or toolName:find("bazooka")
+
+        -- 1. อ่านจาก ModuleScript ของปืน (ACS/Config)
         local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
         if acsSettings and acsSettings:IsA("ModuleScript") then
             local success, config = pcall(require, acsSettings)
             if success and type(config) == "table" then
-                local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed
+                -- ดึงค่าความเร็ว
+                local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed or config.Velocity
                 if type(speed) == "number" and speed > 0 then
                     cachedBulletSpeed = speed
-                    return
                 end
+                
+                -- ดึงค่าแรงโน้มถ่วง / Bullet Drop
+                local drop = config.Drop or config.BulletDrop or config.Gravity or config.G
+                if type(drop) == "number" then
+                    cachedBulletGravity = drop
+                else
+                    -- ถ้าในสคริปต์ไม่มีเขียนไว้ แต่เป็น RPG ให้ตั้งค่าเป็นแรงโน้มถ่วงโลก ถ้าเป็นปืนทั่วไปให้เป็น 0
+                    cachedBulletGravity = isLauncher and workspace.Gravity or 0
+                end
+                return
             end
         end
+
+        -- 2. อ่านจาก Attributes ในตัว Tool
+        local foundSpeed = false
         for name, value in pairs(tool:GetAttributes()) do
             local lower = name:lower()
             if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
                 cachedBulletSpeed = value
-                return
+                foundSpeed = true
             end
         end
+
+        if foundSpeed then
+            cachedBulletGravity = isLauncher and workspace.Gravity or 0
+            return
+        end
+
+        -- 3. Fallback สำหรับปืนกลุ่ม Launcher กรณีดึงไฟล์ไม่ได้
+        if isLauncher then
+            cachedBulletSpeed = 400
+            cachedBulletGravity = workspace.Gravity
+            return
+        end
     end
+
+    -- ปืนทั่วไปถ้าไม่เจอข้อมูล ให้ดึงความเร็วจาก Slider และตั้ง Gravity เป็น 0 (ยิงตรง)
     cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+    cachedBulletGravity = 0
 end
 
 local function setupCharacterSpeedListener(char)
     if not char then return end
     char.ChildAdded:Connect(function(child)
         if child:IsA("Tool") then
-            task.defer(updateBulletSpeed)
+            task.defer(updateWeaponStats)
         end
     end)
     char.ChildRemoved:Connect(function(child)
         if child:IsA("Tool") then
-            task.defer(updateBulletSpeed)
+            task.defer(updateWeaponStats)
         end
     end)
-    updateBulletSpeed()
+    updateWeaponStats()
 end
 
 if localPlayer then
@@ -200,7 +237,7 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 10. Advanced Dynamic Prediction Engine (Ballistic Prediction Solver v2.2)
+-- 10. Advanced Dynamic Prediction Engine (Ballistic & Linear Prediction Solver v2.3)
 local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     if not target then return nil end
     local char = target.Character
@@ -219,9 +256,11 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     
     local camPos = cam.CFrame.Position
     local v = bulletSpeed or cachedBulletSpeed or 1000
-    local g = bulletGravity or workspace.Gravity
     
-    -- ใช้ One-Way Ping Delay (RTT / 2 / 1000)
+    -- [แก้ไขจุดที่ 1] ดึงค่า Gravity จาก cachedBulletGravity (ถ้าปืนยิงตรงค่าจะเป็น 0)
+    local g = bulletGravity or cachedBulletGravity or 0
+    
+    -- ใช้ One-Way Ping Delay
     local pingSec = ((getPing() or 0) / 2000.0)
     
     local targetVel = rootPart.AssemblyLinearVelocity
@@ -236,7 +275,14 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
         end
     end
     
-    -- Initial guess
+    -- [แก้ไขจุดที่ 2] กรณีปืนยิงตรง (g <= 0.01) คำนวณดักทางวิ่งเพียวๆ โดยไม่ยกเป้าขึ้นฟ้า
+    if g <= 0.01 then
+        local dist = (targetPos - camPos).Magnitude
+        local tof = (dist / math.max(v, 1)) + pingSec
+        return targetPos + targetVel * tof + 0.5 * targetAccel * (tof * tof)
+    end
+    
+    -- Initial guess (ทำงานเฉพาะปืนที่มี Bullet Drop จริง เช่น RPG)
     local initDist = (targetPos - camPos).Magnitude
     local initTOF = math.max(initDist / v, 0.016) + pingSec
     local predictedPos = targetPos + targetVel * initTOF + 0.5 * targetAccel * (initTOF * initTOF)
@@ -292,6 +338,7 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     -- ใช้ finalHorizDist ที่สอดคล้องกับ flatDiff.Unit ล่าสุด
     return camPos + (flatDiff.Unit * finalHorizDist) + Vector3.new(0, finalHorizDist * lastTanTheta, 0)
 end
+
 
 -- 11. ESP Management
 local function createESP(player, character)
