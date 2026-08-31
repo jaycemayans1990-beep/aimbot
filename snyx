@@ -254,9 +254,11 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local g = bulletGravity or cachedBulletGravity or 0
     local pingSec = ((getPing() or 0) / 2000.0)
     
-    local targetVel = rootPart.AssemblyLinearVelocity
+    local rawVel = rootPart.AssemblyLinearVelocity
+    local targetVel = Vector3.new(rawVel.X, math.clamp(rawVel.Y, -80, 80), rawVel.Z)
     local targetAccel = Vector3.zero
-    if humanoid then
+    
+    if humanoid then -- แก้ไขไวยากรณ์ตรงนี้เรียบร้อยแล้ว
         local state = humanoid:GetState()
         local isAir = (state == Enum.HumanoidStateType.Freefall or
                        state == Enum.HumanoidStateType.Jumping or
@@ -366,7 +368,9 @@ end)
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
 RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
     local cam = getCamera()
-    
+    if not cam then return end
+
+    -- อัปเดตตำแหน่งและขอบเขตวงกลม FOV ทุกเฟรม
     FOVCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)  
     FOVCircle.Radius = State.FOV  
     FOVCircle.Visible = State.ShowFOV  
@@ -380,14 +384,25 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     if currentTarget then  
         local targetPos = getPredictedPosition(currentTarget)  
         if targetPos then  
-            local targetCFrame = CFrame.lookAt(cam.CFrame.Position, targetPos)  
+            local camPos = cam.CFrame.Position
+            local dir = (targetPos - camPos)
             
-            if State.Smoothness >= 0.99 then
-                cam.CFrame = targetCFrame
-            else
-                local speed = math.clamp(State.Smoothness, 0.01, 0.98)
-                local alpha = 1 - ((1 - speed) ^ (deltaTime * 60))
-                cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)
+            if dir.Magnitude > 0.1 then
+                -- แก้ไข Gimbal Lock (ป้องกันกล้องหมุนควงเวลามองก้มตรงๆ จากที่สูง)
+                local upVector = Vector3.yAxis
+                if math.abs(dir.Unit.Y) > 0.95 then
+                    upVector = Vector3.zAxis
+                end
+                
+                local targetCFrame = CFrame.lookAt(camPos, targetPos, upVector)  
+                
+                if State.Smoothness >= 0.99 then
+                    cam.CFrame = targetCFrame
+                else
+                    local speed = math.clamp(State.Smoothness, 0.01, 0.98)
+                    local alpha = 1 - ((1 - speed) ^ (deltaTime * 60))
+                    cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)
+                end
             end
         end  
     end
