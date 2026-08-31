@@ -233,7 +233,7 @@ local function getClosestTarget()
 end
 
 
--- 10. Pure Physics Dynamic Prediction Engine (v3.0)
+-- 10. Pure Physics Dynamic Prediction Engine (v3.2 - Newton-Fixed Iteration)
 local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     if not target then return nil end
     local char = target.Character
@@ -256,32 +256,49 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local pingSec = ((getPing() or 0) / 2000.0)
     
     local rawVel = rootPart.AssemblyLinearVelocity
-    local targetVel = Vector3.new(rawVel.X, math.clamp(rawVel.Y, -80, 80), rawVel.Z)
-    local targetAccel = Vector3.zero
+    local isSeated = humanoid and (humanoid.Sit or humanoid.SeatPart ~= nil)
     
-    if humanoid then -- แก้ไขไวยากรณ์ตรงนี้เรียบร้อยแล้ว
+    -- seated: ใช้ความเร็วจริง (ไม่ clamp) ให้ตามรถกระโดด/ตกได้แม่น
+    -- non-seated: clamp กว้างๆ ไว้ป้องกันค่านอกช่วง แต่ไม่ตัดมากไป
+    local targetVelY
+    if isSeated then
+        targetVelY = rawVel.Y
+    else
+        targetVelY = math.clamp(rawVel.Y, -200, 200)
+    end
+    local targetVel = Vector3.new(rawVel.X, targetVelY, rawVel.Z)
+    
+    local targetAccel = Vector3.new(0, 0, 0)
+    if humanoid and not isSeated then
         local state = humanoid:GetState()
-        local isAir = (state == Enum.HumanoidStateType.Freefall or
-                       state == Enum.HumanoidStateType.Jumping or
-                       humanoid.FloorMaterial == Enum.Material.Air)
+        local isAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
         if isAir then
             targetAccel = Vector3.new(0, -workspace.Gravity, 0)
         end
     end
     
+    -- ใช้ Fixed-point iteration แทนการวน 4 รอบตายตัว ให้ลู่เข้าหาคำตอบจริง
+    local t = (targetPos - camPos).Magnitude / v + pingSec
     local predictedPos = targetPos
-    local tof = 0
     
-    for iter = 1, 4 do
-        local dist = (predictedPos - camPos).Magnitude
-        tof = (dist / v) + pingSec
-        predictedPos = targetPos + (targetVel * tof) + (0.5 * targetAccel * (tof * tof))
+    for iter = 1, 8 do
+        local newPos = targetPos + (targetVel * t) + (0.5 * targetAccel * (t * t))
+        local newDist = (newPos - camPos).Magnitude
+        local newT = (newDist / v) + pingSec
+        
+        -- เช็ค convergence หยุดถ้าค่า TOF เปลี่ยนน้อยกว่า 1ms
+        if math.abs(newT - t) < 0.001 then
+            t = newT
+            predictedPos = newPos
+            break
+        end
+        t = newT
+        predictedPos = newPos
     end
     
-    local bulletDrop = 0.5 * g * (tof * tof)
+    local bulletDrop = 0.5 * g * (t * t)
     return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
-
 -- 11. ESP Management
 local function createESP(player, character)
     local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 2)
