@@ -1,4 +1,4 @@
--- 1. Services
+-- 1. Services & Initial Cleanup
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local workspace = game:GetService("Workspace")
@@ -6,6 +6,12 @@ local UserInputService = game:GetService("UserInputService")
 
 local localPlayer = Players.LocalPlayer
 local espCache = {}
+
+-- ลบ UI เก่าก่อนสร้างใหม่ ป้องกัน UI ซ้อนทับกันเมื่อรันซ้ำ
+if localPlayer and localPlayer:FindFirstChild("PlayerGui") then
+    local oldUI = localPlayer.PlayerGui:FindFirstChild("SnyX_CustomAimbotUI")
+    if oldUI then oldUI:Destroy() end
+end
 
 -- Camera Caching
 local camera = workspace.CurrentCamera
@@ -43,10 +49,10 @@ end
 
 -- 4. Dynamic Camera Helper
 local function getCamera()
-    return camera
+    return camera or workspace.CurrentCamera
 end
 
--- 5. Dynamic Weapon Stats Detection System (Pure Physics Compatible)
+-- 5. Dynamic Weapon Stats Detection System
 local function updateWeaponStats()
     if not State.AutoBulletSpeed then
         cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
@@ -61,7 +67,6 @@ local function updateWeaponStats()
         local toolName = tool.Name:lower()
         local isLauncher = toolName:find("rpg") or toolName:find("rocket") or toolName:find("launcher") or toolName:find("grenade") or toolName:find("bazooka")
 
-        -- 1. ดึงค่าจาก ModuleScript ของระบบปืน (ACS, Carbon ฯลฯ)
         local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
         if acsSettings and acsSettings:IsA("ModuleScript") then
             local success, config = pcall(require, acsSettings)
@@ -81,7 +86,6 @@ local function updateWeaponStats()
             end
         end
 
-        -- 2. ดึงค่าจาก Attributes
         local foundSpeed = false
         for name, value in pairs(tool:GetAttributes()) do
             local lower = name:lower()
@@ -96,7 +100,6 @@ local function updateWeaponStats()
             return
         end
 
-        -- 3. Fallback สำหรับ RPG หรือเครื่องยิงระเบิด
         if isLauncher then
             cachedBulletSpeed = 400
             cachedBulletGravity = workspace.Gravity
@@ -104,7 +107,6 @@ local function updateWeaponStats()
         end
     end
 
-    -- ปืนทั่วไป (Sniper / Rifle) ในเกมส่วนใหญ่กระสุนยิงตรง
     cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
     cachedBulletGravity = 0
 end
@@ -165,85 +167,74 @@ local function isValidEnemy(player)
     return true
 end
 
--- 8. Wall Check Function (Optimized)
-local function isVisible(targetPart, targetCharacter)
+-- 8. Wall Check Function
+local raycastParams = RaycastParams.new()
+raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+raycastParams.IgnoreWater = true
+
+local function isVisible(targetPart)
     if not State.WallCheck then return true end
-    if not targetPart or not targetCharacter then return false end
+    if not targetPart or not targetPart.Parent then return false end
+
+    local character = localPlayer and localPlayer.Character
+    if not character then return false end
 
     local cam = getCamera()
     if not cam then return false end
 
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    
-    -- ใส่ตัวเราและตัวศัตรูใน Ignore List เพื่อให้ Raycast เช็คแค่สิ่งกีดขวาง (เช่น กำแพง/สิ่งปลูกสร้าง)
-    local ignoreList = {cam, LocalPlayer.Character, targetCharacter}
-    raycastParams.FilterDescendantsInstances = ignoreList
+    raycastParams.FilterDescendantsInstances = {character, cam}
 
     local origin = cam.CFrame.Position
-    local direction = targetPart.Position - origin
+    local destination = targetPart.Position
+    local direction = destination - origin
+
     local result = workspace:Raycast(origin, direction, raycastParams)
 
-    return result == nil
+    if result then
+        local targetModel = targetPart:FindFirstAncestorOfClass("Model")
+        if targetModel and result.Instance:IsDescendantOf(targetModel) then
+            return true
+        end
+        return false
+    end
+
+    return true
 end
 
 -- 9. Target Acquisition
 local function getClosestTarget()
+    local closestPlayer = nil
+    local shortestDist = State.FOV
     local cam = getCamera()
     if not cam then return nil end
-
-    local players = Players:GetPlayers()
-    local playerCount = #players
-    if playerCount == 0 then return nil end
-
+    
     local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    local camPos = cam.CFrame.Position
-    local fov = State.FOV
-    local maxDist3D = 2000
-
-    local closestPlayer = nil
-    local shortestDist = fov
-
-    for i = 1, playerCount do
-        local player = players[i]
-        if not isValidEnemy(player) then goto continue end
-
-        local char = player.Character
-        if not char then goto continue end
-
-        local targetPart = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
-        if not targetPart then goto continue end
-
-        -- 1. Pre-filter ระยะ 3D (ไม่กิน CPU)
-        local dist3D = (targetPart.Position - camPos).Magnitude
-        if dist3D > maxDist3D then goto continue end
-
-        -- 2. Pre-filter พิกัดหน้าจอ
-        local screenPoint, onScreen = cam:WorldToViewportPoint(targetPart.Position)
-        if not onScreen then goto continue end
-
-        -- 3. Pre-filter วง FOV
-        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
-        if dist > fov then goto continue end
-
-        local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
-
-        -- 4. Lazy Raycast (ยิงฟิสิกส์เฉพาะคนที่ใกล้กว่าคนที่ผ่านเงื่อนไขก่อนหน้า)
-        if effectiveDist < shortestDist then
-            if isVisible(targetPart, char) then
-                shortestDist = effectiveDist
-                closestPlayer = player
-            end
-        end
-
-        ::continue::
-    end
-
+    
+    for _, player in ipairs(Players:GetPlayers()) do  
+        if isValidEnemy(player) then  
+            local char = player.Character
+            local targetPart = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))  
+            if targetPart then  
+                local screenPoint, onScreen = cam:WorldToViewportPoint(targetPart.Position)  
+                  
+                if onScreen then  
+                    local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
+                    local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
+                    
+                    if effectiveDist < shortestDist then  
+                        if isVisible(targetPart) then
+                            shortestDist = effectiveDist  
+                            closestPlayer = player  
+                        end
+                    end  
+                end  
+            end  
+        end  
+    end  
     return closestPlayer
 end
 
-
--- 10. Pure Physics Dynamic Prediction Engine (v3.2 - Newton-Fixed Iteration)
+-- 10. Prediction Engine
 local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     if not target then return nil end
     local char = target.Character
@@ -254,7 +245,7 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not rootPart or not headPart then return nil end
     
-    local cam = workspace.CurrentCamera
+    local cam = getCamera()
     if not cam then return headPart.Position end
     
     local targetPos = headPart.Position
@@ -265,20 +256,13 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local g = bulletGravity or cachedBulletGravity or 0
     local pingSec = ((getPing() or 0) / 2000.0)
     
-    local rawVel = rootPart.AssemblyLinearVelocity
+    local rawVel = rootPart.AssemblyLinearVelocity or Vector3.zero
     local isSeated = humanoid and (humanoid.Sit or humanoid.SeatPart ~= nil)
     
-    -- seated: ใช้ความเร็วจริง (ไม่ clamp) ให้ตามรถกระโดด/ตกได้แม่น
-    -- non-seated: clamp กว้างๆ ไว้ป้องกันค่านอกช่วง แต่ไม่ตัดมากไป
-    local targetVelY
-    if isSeated then
-        targetVelY = rawVel.Y
-    else
-        targetVelY = math.clamp(rawVel.Y, -200, 200)
-    end
+    local targetVelY = isSeated and rawVel.Y or math.clamp(rawVel.Y, -200, 200)
     local targetVel = Vector3.new(rawVel.X, targetVelY, rawVel.Z)
     
-    local targetAccel = Vector3.new(0, 0, 0)
+    local targetAccel = Vector3.zero
     if humanoid and not isSeated then
         local state = humanoid:GetState()
         local isAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
@@ -287,7 +271,6 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
         end
     end
     
-    -- ใช้ Fixed-point iteration แทนการวน 4 รอบตายตัว ให้ลู่เข้าหาคำตอบจริง
     local t = (targetPos - camPos).Magnitude / v + pingSec
     local predictedPos = targetPos
     
@@ -296,7 +279,6 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
         local newDist = (newPos - camPos).Magnitude
         local newT = (newDist / v) + pingSec
         
-        -- เช็ค convergence หยุดถ้าค่า TOF เปลี่ยนน้อยกว่า 1ms
         if math.abs(newT - t) < 0.001 then
             t = newT
             predictedPos = newPos
@@ -309,6 +291,7 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local bulletDrop = 0.5 * g * (t * t)
     return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
+
 -- 11. ESP Management
 local function createESP(player, character)
     local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 2)
@@ -416,11 +399,8 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
             
             if dir.Magnitude > 0.1 then
                 local forward = dir.Unit
-
-                -- ใช้ RightVector เดิมของกล้องเป็นฐาน เพื่อรักษา Roll
                 local right = cam.CFrame.RightVector
 
-                -- ปรับ right ให้ตั้งฉากกับ forward ใหม่ (กำจัดส่วนที่ขนานกับ forward)
                 right = right - forward * right:Dot(forward)
                 local rightMag = right.Magnitude
 
@@ -449,8 +429,7 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     end
 end)
 
-
--- 13. Custom GUI Construction
+-- 13. GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SnyX_CustomAimbotUI"
 ScreenGui.ResetOnSpawn = false
@@ -688,7 +667,7 @@ local function createSlider(text, min, max, default, step, callback)
     end)
 end
 
--- UI Controls Construction (แก้ไขชื่อฟังก์ชันเรียกใช้ให้ถูกต้องแล้ว)
+-- UI Controls Building
 createToggle("Enable Aimbot", State.Aimbot, function(v) State.Aimbot = v end)
 createToggle("Show FOV Circle", State.ShowFOV, function(v) State.ShowFOV = v end)
 createToggle("Team Check", State.TeamCheck, function(v) State.TeamCheck = v end)
