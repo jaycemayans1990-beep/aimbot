@@ -310,7 +310,85 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffs
     local predictedPos = targetPos
     local lastTanTheta = 0
 
-    for iter = 1, 8 do
+-- 10. Pure Physics Dynamic Prediction Engine (Anti-Nil & Anti-Jitter)
+local velocityHistory = setmetatable({}, {__mode = "k"})
+local lastTickTime = setmetatable({}, {__mode = "k"})
+
+local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffsetSec)
+    if not target then return nil end
+    local char = target.Character
+    if not char then return nil end
+
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    local headPart = char:FindFirstChild("Head") or rootPart
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not rootPart or not headPart then return nil end
+
+    local cam = workspace.CurrentCamera
+    if not cam then return headPart.Position end
+
+    local targetPos = headPart.Position
+    if not State.Prediction then return targetPos end
+
+    local camPos = cam.CFrame.Position
+    local v = math.max(bulletSpeed or cachedBulletSpeed or 3500, 1)
+    local g = bulletGravity or cachedBulletGravity or 0
+
+    local rawPing = getPing() or 0
+    local pingInSec = (rawPing > 5) and (rawPing / 1000.0) or rawPing
+    local pingSec = pingOffsetSec or (pingInSec + 0.0166)
+
+    local now = os.clock()
+    local lastTime = lastTickTime[target] or (now - 0.016)
+    local dt = math.clamp(now - lastTime, 0.001, 0.1)
+    lastTickTime[target] = now
+
+    if not velocityHistory[target] then velocityHistory[target] = {} end
+    local hist = velocityHistory[target]
+
+    local rawVel = rootPart.AssemblyLinearVelocity
+    local currentVel = Vector3.new(rawVel.X, math.clamp(rawVel.Y, -80, 80), rawVel.Z)
+
+    table.insert(hist, currentVel)
+    if #hist > 5 then table.remove(hist, 1) end
+
+    local avgVel = Vector3.zero
+    for _, vel in ipairs(hist) do
+        avgVel = avgVel + vel
+    end
+    avgVel = avgVel / #hist
+
+    local targetAccel = Vector3.zero
+    if #hist >= 2 then
+        local prevVel = hist[#hist - 1]
+        targetAccel = (currentVel - prevVel) / dt
+        if targetAccel.Magnitude > 40 then
+            targetAccel = targetAccel.Unit * 40
+        end
+    elseif humanoid then
+        local state = humanoid:GetState()
+        local isAir = (state == Enum.HumanoidStateType.Freefall or
+                       state == Enum.HumanoidStateType.Jumping or
+                       humanoid.FloorMaterial == Enum.Material.Air)
+        if isAir then
+            targetAccel = Vector3.new(0, -g, 0)
+        end
+    end
+
+    if g < 0.01 then
+        local predictedPos = targetPos
+        for iter = 1, 4 do
+            local dist = (predictedPos - camPos).Magnitude
+            local tof = (dist / v) + pingSec
+            predictedPos = targetPos + (avgVel * tof) + (0.5 * targetAccel * (tof * tof))
+        end
+        return predictedPos
+    end
+
+    local predictedPos = targetPos
+    local lastTanTheta = 0
+
+    for iter = 1, 6 do
         local diff = predictedPos - camPos
         local flatDiff = Vector3.new(diff.X, 0, diff.Z)
         local horizDist = flatDiff.Magnitude
@@ -325,8 +403,11 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffs
 
         local v2 = v * v
         local disc = v2 * v2 - g * (g * horizDist * horizDist + 2 * vertDist * v2)
+
+        -- ป้องกันการคืนค่า nil (Fallback ป้องกัน RPG สั่น)
         if disc < 0 then
-            return nil
+            lastTanTheta = (vertDist + 0.5 * g * (horizDist / v)^2) / math.max(horizDist, 0.001)
+            break
         end
 
         local sqrtDisc = math.sqrt(disc)
@@ -338,15 +419,14 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity, pingOffs
 
         local newPos = targetPos + avgVel * tof + 0.5 * targetAccel * (tof * tof)
 
-        if (newPos - predictedPos).Magnitude < 0.005 then
+        if (newPos - predictedPos).Magnitude < 0.01 then
             predictedPos = newPos
             break
         end
 
-        predictedPos = predictedPos * 0.3 + newPos * 0.7
+        predictedPos = predictedPos * 0.4 + newPos * 0.6
     end
 
-    -- ---- Aim Point ----
     local diff = predictedPos - camPos
     local flatDiff = Vector3.new(diff.X, 0, diff.Z)
     local finalHorizDist = flatDiff.Magnitude
@@ -441,7 +521,9 @@ task.spawn(function()
     end
 end)
 
--- 12. Main Camera Engine
+-- 12. Main Camera Engine (Exponential Smoothing + Anti-Shake)
+local smoothDir = Vector3.zero
+
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
 RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Value + 1, function(deltaTime)
     local cam = getCamera()
@@ -453,48 +535,56 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
       
     if not State.Aimbot then 
         currentTarget = nil
+        smoothDir = Vector3.zero
         return 
     end
     
     currentTarget = getClosestTarget()  
     if currentTarget then  
-        local targetPos = getPredictedPosition(currentTarget)  
-        if targetPos then  
+        local rawTargetPos = getPredictedPosition(currentTarget)  
+        if rawTargetPos then  
             local camPos = cam.CFrame.Position
-            local dir = (targetPos - camPos)
+            local rawDir = (rawTargetPos - camPos)
             
-            if dir.Magnitude > 0.1 then
-                local forward = dir.Unit
-
-                -- ใช้ RightVector เดิมของกล้องเป็นฐาน เพื่อรักษา Roll
+            if rawDir.Magnitude > 0.1 then
+                local rawForward = rawDir.Unit
+                
+                if smoothDir.Magnitude < 0.001 then
+                    smoothDir = rawForward
+                else
+                    local smoothingFactor = math.clamp(State.Smoothness * 0.5, 0.01, 0.5)
+                    smoothDir = smoothDir:Lerp(rawForward, 1 - math.exp(-deltaTime * (1 / smoothingFactor)))
+                end
+                
                 local right = cam.CFrame.RightVector
-
-                -- ปรับ right ให้ตั้งฉากกับ forward ใหม่ (กำจัดส่วนที่ขนานกับ forward)
-                right = right - forward * right:Dot(forward)
+                right = right - smoothDir * right:Dot(smoothDir)
                 local rightMag = right.Magnitude
-
                 if rightMag < 0.001 then
-                    right = Vector3.xAxis:Cross(forward)
+                    right = Vector3.xAxis:Cross(smoothDir)
                     if right.Magnitude < 0.001 then
-                        right = Vector3.zAxis:Cross(forward)
+                        right = Vector3.zAxis:Cross(smoothDir)
                     end
                     right = right.Unit
                 else
                     right = right / rightMag
                 end
-
-                local up = right:Cross(forward).Unit
-                local targetCFrame = CFrame.fromMatrix(camPos, right, up, -forward)
+                
+                local up = right:Cross(smoothDir).Unit
+                local targetCFrame = CFrame.fromMatrix(camPos, right, up, -smoothDir)
                 
                 if State.Smoothness >= 0.99 then
                     cam.CFrame = targetCFrame
                 else
                     local speed = math.clamp(State.Smoothness, 0.01, 0.98)
-                    local alpha = 1 - ((1 - speed) ^ (deltaTime * 60))
-                    cam.CFrame = cam.CFrame:Lerp(targetCFrame, alpha)
+                    local lerpFactor = 1 - math.exp(-deltaTime * (speed * 15))
+                    cam.CFrame = cam.CFrame:Lerp(targetCFrame, lerpFactor)
                 end
             end
         end  
+    else
+        if smoothDir.Magnitude > 0.001 then
+            smoothDir = smoothDir:Lerp(cam.CFrame.LookVector, deltaTime * 2)
+        end
     end
 end)
 
