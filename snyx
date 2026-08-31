@@ -21,7 +21,8 @@ local State = {
     Prediction = true,
     AutoBulletSpeed = true,
     BulletSpeed = 5000,
-    Smoothness = 0.3,
+    BulletGravity = 0,
+    Smoothness = 0.5,
     FOV = 120,
     ShowFOV = false,
     ESP = true,
@@ -30,6 +31,7 @@ local State = {
 
 local currentTarget = nil
 local cachedBulletSpeed = 2000
+local cachedBulletGravity = 0 
 
 -- 3. Ping Helper Function
 local function getPing()
@@ -45,8 +47,6 @@ local function getCamera()
 end
 
 -- 5. Dynamic Weapon Stats Detection System (Pure Physics Compatible)
-local cachedBulletGravity = 0 
-
 local function updateWeaponStats()
     if not State.AutoBulletSpeed then
         cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
@@ -66,13 +66,11 @@ local function updateWeaponStats()
         if acsSettings and acsSettings:IsA("ModuleScript") then
             local success, config = pcall(require, acsSettings)
             if success and type(config) == "table" then
-                -- ความเร็วกระสุน
                 local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed or config.Velocity
                 if type(speed) == "number" and speed > 0 then
                     cachedBulletSpeed = speed
                 end
                 
-                -- ค่าแรงโน้มถ่วงกระสุน
                 local drop = config.Drop or config.BulletDrop or config.Gravity or config.G
                 if type(drop) == "number" then
                     cachedBulletGravity = drop
@@ -107,55 +105,6 @@ local function updateWeaponStats()
     end
 
     -- ปืนทั่วไป (Sniper / Rifle) ในเกมส่วนใหญ่กระสุนยิงตรง
-    cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
-    cachedBulletGravity = 0
-end
-
-local function setupCharacterSpeedListener(char)
-    if not char then return end
-    char.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") then
-            task.defer(updateWeaponStats)
-        end
-    end)
-    char.ChildRemoved:Connect(function(child)
-        if child:IsA("Tool") then
-            task.defer(updateWeaponStats)
-        end
-    end)
-    updateWeaponStats()
-end
-
-if localPlayer then
-    if localPlayer.Character then setupCharacterSpeedListener(localPlayer.Character) end
-    localPlayer.CharacterAdded:Connect(setupCharacterSpeedListener)
-end
-
-
-        -- 2. อ่านจาก Attributes ในตัว Tool
-        local foundSpeed = false
-        for name, value in pairs(tool:GetAttributes()) do
-            local lower = name:lower()
-            if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
-                cachedBulletSpeed = value
-                foundSpeed = true
-            end
-        end
-
-        if foundSpeed then
-            cachedBulletGravity = isLauncher and workspace.Gravity or 0
-            return
-        end
-
-        -- 3. Fallback สำหรับปืนกลุ่ม Launcher กรณีดึงไฟล์ไม่ได้
-        if isLauncher then
-            cachedBulletSpeed = 400
-            cachedBulletGravity = workspace.Gravity
-            return
-        end
-    end
-
-    -- ปืนทั่วไปถ้าไม่เจอข้อมูล ให้ดึงความเร็วจาก Slider และตั้ง Gravity เป็น 0 (ยิงตรง)
     cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
     cachedBulletGravity = 0
 end
@@ -225,7 +174,6 @@ local filterList = {}
 
 local function isVisible(targetPart)
     if not State.WallCheck then return true end
-
     if not targetPart or not targetPart.Parent then return false end
 
     local character = localPlayer and localPlayer.Character
@@ -254,7 +202,7 @@ local function isVisible(targetPart)
     return true
 end
 
--- 9. Target Acquisition (Optimized: Check FOV first, then Raycast)
+-- 9. Target Acquisition
 local function getClosestTarget()
     local closestPlayer = nil
     local shortestDist = State.FOV
@@ -306,7 +254,6 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local g = bulletGravity or cachedBulletGravity or 0
     local pingSec = ((getPing() or 0) / 2000.0)
     
-    -- ความเร็วและการเคลื่อนที่ของเป้าหมาย
     local targetVel = rootPart.AssemblyLinearVelocity
     local targetAccel = Vector3.zero
     if humanoid then
@@ -319,25 +266,18 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
         end
     end
     
-    -- คำนวณหาระยะเวลาที่กระสุนใช้เดินทาง (Time of Flight: TOF)
     local predictedPos = targetPos
     local tof = 0
     
-    -- วนลูปคำนวณหาพิกัดและเวลาที่แม่นยำที่สุด (Fixed-Point Iteration)
     for iter = 1, 4 do
         local dist = (predictedPos - camPos).Magnitude
         tof = (dist / v) + pingSec
         predictedPos = targetPos + (targetVel * tof) + (0.5 * targetAccel * (tof * tof))
     end
     
-    -- ชดเชยแรงโน้มถ่วงกระสุนตามหลักฟิสิกส์สุทธิ (Drop Compensation = 1/2 * g * t^2)
-    -- ถ้าระยะใกล้ t จะน้อย ค่าความสูงที่ยกขึ้นจะเข้าใกล้ 0 ทันที
     local bulletDrop = 0.5 * g * (tof * tof)
-    
     return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
-
-
 
 -- 11. ESP Management
 local function createESP(player, character)
@@ -691,7 +631,7 @@ local function createSlider(text, min, max, default, step, callback)
     end)
 end
 
--- UI Controls Construction
+-- UI Controls Construction (แก้ไขชื่อฟังก์ชันเรียกใช้ให้ถูกต้องแล้ว)
 createToggle("Enable Aimbot", State.Aimbot, function(v) State.Aimbot = v end)
 createToggle("Show FOV Circle", State.ShowFOV, function(v) State.ShowFOV = v end)
 createToggle("Team Check", State.TeamCheck, function(v) State.TeamCheck = v end)
@@ -699,14 +639,14 @@ createToggle("Wall Check", State.WallCheck, function(v) State.WallCheck = v end)
 createToggle("Prediction Engine", State.Prediction, function(v) State.Prediction = v end)
 createToggle("Auto Detect Weapon Speed", State.AutoBulletSpeed, function(v) 
     State.AutoBulletSpeed = v 
-    updateBulletSpeed()
+    updateWeaponStats()
 end)
 createToggle("ESP Wallhack", State.ESP, function(v) State.ESP = v end)
 createToggle("ESP Username", State.ESPName, function(v) State.ESPName = v end)
 
 createSlider("Manual Bullet Speed", 500, 10000, State.BulletSpeed, 100, function(v) 
     State.BulletSpeed = v 
-    updateBulletSpeed()
+    updateWeaponStats()
 end)
 createSlider("Smoothness", 0.05, 1, State.Smoothness, 0.05, function(v) State.Smoothness = v end)
 createSlider("Aimbot FOV Range", 50, 500, State.FOV, 10, function(v) State.FOV = v end)
