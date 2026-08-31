@@ -166,69 +166,79 @@ local function isValidEnemy(player)
 end
 
 -- 8. Wall Check Function (Optimized)
-local raycastParams = RaycastParams.new()
-raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-raycastParams.IgnoreWater = true
-
-local filterList = {}
-
-local function isVisible(targetPart)
+local function isVisible(targetPart, targetCharacter)
     if not State.WallCheck then return true end
-    if not targetPart or not targetPart.Parent then return false end
-
-    local character = localPlayer and localPlayer.Character
-    if not character then return false end
+    if not targetPart or not targetCharacter then return false end
 
     local cam = getCamera()
     if not cam then return false end
 
-    filterList[1] = character
-    raycastParams.FilterDescendantsInstances = filterList
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    -- ใส่ตัวเราและตัวศัตรูใน Ignore List เพื่อให้ Raycast เช็คแค่สิ่งกีดขวาง (เช่น กำแพง/สิ่งปลูกสร้าง)
+    local ignoreList = {cam, LocalPlayer.Character, targetCharacter}
+    raycastParams.FilterDescendantsInstances = ignoreList
 
     local origin = cam.CFrame.Position
-    local destination = targetPart.Position
-    local direction = destination - origin
-
+    local direction = targetPart.Position - origin
     local result = workspace:Raycast(origin, direction, raycastParams)
 
-    if result then
-        local targetModel = targetPart:FindFirstAncestorOfClass("Model")
-        if targetModel and result.Instance:IsDescendantOf(targetModel) then
-            return true
-        end
-        return false
-    end
-
-    return true
+    return result == nil
 end
 
 -- 9. Target Acquisition
 local function getClosestTarget()
-    local closestPlayer = nil
-    local shortestDist = State.FOV
     local cam = getCamera()
+    if not cam then return nil end
+
+    local players = Players:GetPlayers()
+    local playerCount = #players
+    if playerCount == 0 then return nil end
+
     local screenCenter = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-    
-    for _, player in ipairs(Players:GetPlayers()) do  
-        if isValidEnemy(player) then  
-            local targetPart = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")  
-            if targetPart then  
-                local screenPoint, onScreen = cam:WorldToViewportPoint(targetPart.Position)  
-                  
-                if onScreen then  
-                    local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
-                    local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
-                    
-                    if effectiveDist < shortestDist then  
-                        if isVisible(targetPart) then
-                            shortestDist = effectiveDist  
-                            closestPlayer = player  
-                        end
-                    end  
-                end  
-            end  
-        end  
-    end  
+    local camPos = cam.CFrame.Position
+    local fov = State.FOV
+    local maxDist3D = 2000
+
+    local closestPlayer = nil
+    local shortestDist = fov
+
+    for i = 1, playerCount do
+        local player = players[i]
+        if not isValidEnemy(player) then goto continue end
+
+        local char = player.Character
+        if not char then goto continue end
+
+        local targetPart = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+        if not targetPart then goto continue end
+
+        -- 1. Pre-filter ระยะ 3D (ไม่กิน CPU)
+        local dist3D = (targetPart.Position - camPos).Magnitude
+        if dist3D > maxDist3D then goto continue end
+
+        -- 2. Pre-filter พิกัดหน้าจอ
+        local screenPoint, onScreen = cam:WorldToViewportPoint(targetPart.Position)
+        if not onScreen then goto continue end
+
+        -- 3. Pre-filter วง FOV
+        local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - screenCenter).Magnitude
+        if dist > fov then goto continue end
+
+        local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
+
+        -- 4. Lazy Raycast (ยิงฟิสิกส์เฉพาะคนที่ใกล้กว่าคนที่ผ่านเงื่อนไขก่อนหน้า)
+        if effectiveDist < shortestDist then
+            if isVisible(targetPart, char) then
+                shortestDist = effectiveDist
+                closestPlayer = player
+            end
+        end
+
+        ::continue::
+    end
+
     return closestPlayer
 end
 
