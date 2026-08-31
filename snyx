@@ -292,7 +292,11 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
 
--- 11. ESP Management
+-- 11. ESP Management (GPU Optimized Engine v2.0 - 60Hz Heartbeat)
+local MAX_ESP_DISTANCE = 1500
+local UPDATE_RATE = 60
+local lastUpdateTime = 0
+
 local function createESP(player, character)
     local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 2)
     if not head then return end
@@ -312,6 +316,7 @@ local function createESP(player, character)
     nameTag.Size = UDim2.new(0, 150, 0, 30)
     nameTag.StudsOffset = Vector3.new(0, 2, 0)
     nameTag.AlwaysOnTop = true
+    nameTag.MaxDistance = MAX_ESP_DISTANCE
     nameTag.Enabled = false
 
     local textLabel = Instance.new("TextLabel")
@@ -343,35 +348,57 @@ local function removeESP(player)
 end
 
 local function processESP()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= localPlayer then
-            local character = player.Character
-            
-            if character and character:FindFirstChild("HumanoidRootPart") then
-                if not espCache[player] or espCache[player].Character ~= character then
-                    removeESP(player)
-                    createESP(player, character)
-                end
+    local cam = getCamera()
+    if not cam then return end
 
-                local cache = espCache[player]
-                if cache then
-                    local isEnemy = isValidEnemy(player)
-                    cache.Highlight.Enabled = State.ESP and isEnemy
-                    cache.NameTag.Enabled = State.ESPName and isEnemy
-                end
-            else
+    local camPos = cam.CFrame.Position
+    local stateESP = State and State.ESP
+    local stateESPName = State and State.ESPName
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == localPlayer then continue end
+
+        local character = player.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        
+        if character and rootPart then
+            if not espCache[player] or espCache[player].Character ~= character then
                 removeESP(player)
+                createESP(player, character)
             end
+
+            local cache = espCache[player]
+            if cache then
+                local isEnemy = isValidEnemy(player)
+                
+                if isEnemy and (stateESP or stateESPName) then
+                    local dist = (rootPart.Position - camPos).Magnitude
+                    if dist <= MAX_ESP_DISTANCE then
+                        local _, onScreen = cam:WorldToViewportPoint(rootPart.Position)
+                        cache.Highlight.Enabled = stateESP and onScreen
+                        cache.NameTag.Enabled = stateESPName and onScreen
+                    else
+                        cache.Highlight.Enabled = false
+                        cache.NameTag.Enabled = false
+                    end
+                else
+                    cache.Highlight.Enabled = false
+                    cache.NameTag.Enabled = false
+                end
+            end
+        else
+            removeESP(player)
         end
     end
 end
 
 Players.PlayerRemoving:Connect(removeESP)
 
-task.spawn(function()
-    while true do
+RunService.Heartbeat:Connect(function()
+    local currentTime = os.clock()
+    if currentTime - lastUpdateTime >= (1 / UPDATE_RATE) then
         processESP()
-        task.wait(0.1)
+        lastUpdateTime = currentTime
     end
 end)
 
@@ -429,7 +456,7 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     end
 end)
 
--- 13. GUI Construction
+-- 13. Custom GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "SnyX_CustomAimbotUI"
 ScreenGui.ResetOnSpawn = false
