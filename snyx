@@ -21,7 +21,7 @@ local State = {
     Prediction = true,
     AutoBulletSpeed = true,
     BulletSpeed = 5000,
-    Smoothness = 0.5,
+    Smoothness = 0.3,
     FOV = 120,
     ShowFOV = false,
     ESP = true,
@@ -44,8 +44,8 @@ local function getCamera()
     return camera
 end
 
--- 5. ACS & Weapon Stats Auto Detection System (Speed & Gravity)
-local cachedBulletGravity = 0 -- ค่าแรงโน้มถ่วงตั้งต้น (0 = ยิงตรง)
+-- 5. Dynamic Weapon Stats Detection System (Pure Physics Compatible)
+local cachedBulletGravity = 0 
 
 local function updateWeaponStats()
     if not State.AutoBulletSpeed then
@@ -59,31 +59,78 @@ local function updateWeaponStats()
     
     if tool then
         local toolName = tool.Name:lower()
-        -- เช็คว่าปืนนี้เป็นพวก RPG / Rocket / Grenade หรือไม่
         local isLauncher = toolName:find("rpg") or toolName:find("rocket") or toolName:find("launcher") or toolName:find("grenade") or toolName:find("bazooka")
 
-        -- 1. อ่านจาก ModuleScript ของปืน (ACS/Config)
+        -- 1. ดึงค่าจาก ModuleScript ของระบบปืน (ACS, Carbon ฯลฯ)
         local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
         if acsSettings and acsSettings:IsA("ModuleScript") then
             local success, config = pcall(require, acsSettings)
             if success and type(config) == "table" then
-                -- ดึงค่าความเร็ว
+                -- ความเร็วกระสุน
                 local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed or config.Velocity
                 if type(speed) == "number" and speed > 0 then
                     cachedBulletSpeed = speed
                 end
                 
-                -- ดึงค่าแรงโน้มถ่วง / Bullet Drop
+                -- ค่าแรงโน้มถ่วงกระสุน
                 local drop = config.Drop or config.BulletDrop or config.Gravity or config.G
                 if type(drop) == "number" then
                     cachedBulletGravity = drop
                 else
-                    -- ถ้าในสคริปต์ไม่มีเขียนไว้ แต่เป็น RPG ให้ตั้งค่าเป็นแรงโน้มถ่วงโลก ถ้าเป็นปืนทั่วไปให้เป็น 0
                     cachedBulletGravity = isLauncher and workspace.Gravity or 0
                 end
                 return
             end
         end
+
+        -- 2. ดึงค่าจาก Attributes
+        local foundSpeed = false
+        for name, value in pairs(tool:GetAttributes()) do
+            local lower = name:lower()
+            if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
+                cachedBulletSpeed = value
+                foundSpeed = true
+            end
+        end
+
+        if foundSpeed then
+            cachedBulletGravity = isLauncher and workspace.Gravity or 0
+            return
+        end
+
+        -- 3. Fallback สำหรับ RPG หรือเครื่องยิงระเบิด
+        if isLauncher then
+            cachedBulletSpeed = 400
+            cachedBulletGravity = workspace.Gravity
+            return
+        end
+    end
+
+    -- ปืนทั่วไป (Sniper / Rifle) ในเกมส่วนใหญ่กระสุนยิงตรง
+    cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+    cachedBulletGravity = 0
+end
+
+local function setupCharacterSpeedListener(char)
+    if not char then return end
+    char.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            task.defer(updateWeaponStats)
+        end
+    end)
+    char.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then
+            task.defer(updateWeaponStats)
+        end
+    end)
+    updateWeaponStats()
+end
+
+if localPlayer then
+    if localPlayer.Character then setupCharacterSpeedListener(localPlayer.Character) end
+    localPlayer.CharacterAdded:Connect(setupCharacterSpeedListener)
+end
+
 
         -- 2. อ่านจาก Attributes ในตัว Tool
         local foundSpeed = false
@@ -237,7 +284,7 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 10. Advanced Dynamic Prediction Engine (Ballistic & Linear Prediction Solver v2.3)
+-- 10. Pure Physics Dynamic Prediction Engine (v3.0)
 local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     if not target then return nil end
     local char = target.Character
@@ -255,14 +302,11 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     if not State.Prediction then return targetPos end
     
     local camPos = cam.CFrame.Position
-    local v = bulletSpeed or cachedBulletSpeed or 1000
-    
-    -- [แก้ไขจุดที่ 1] ดึงค่า Gravity จาก cachedBulletGravity (ถ้าปืนยิงตรงค่าจะเป็น 0)
+    local v = math.max(bulletSpeed or cachedBulletSpeed or 1000, 1)
     local g = bulletGravity or cachedBulletGravity or 0
-    
-    -- ใช้ One-Way Ping Delay
     local pingSec = ((getPing() or 0) / 2000.0)
     
+    -- ความเร็วและการเคลื่อนที่ของเป้าหมาย
     local targetVel = rootPart.AssemblyLinearVelocity
     local targetAccel = Vector3.zero
     if humanoid then
@@ -275,69 +319,24 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
         end
     end
     
-    -- [แก้ไขจุดที่ 2] กรณีปืนยิงตรง (g <= 0.01) คำนวณดักทางวิ่งเพียวๆ โดยไม่ยกเป้าขึ้นฟ้า
-    if g <= 0.01 then
-        local dist = (targetPos - camPos).Magnitude
-        local tof = (dist / math.max(v, 1)) + pingSec
-        return targetPos + targetVel * tof + 0.5 * targetAccel * (tof * tof)
+    -- คำนวณหาระยะเวลาที่กระสุนใช้เดินทาง (Time of Flight: TOF)
+    local predictedPos = targetPos
+    local tof = 0
+    
+    -- วนลูปคำนวณหาพิกัดและเวลาที่แม่นยำที่สุด (Fixed-Point Iteration)
+    for iter = 1, 4 do
+        local dist = (predictedPos - camPos).Magnitude
+        tof = (dist / v) + pingSec
+        predictedPos = targetPos + (targetVel * tof) + (0.5 * targetAccel * (tof * tof))
     end
     
-    -- Initial guess (ทำงานเฉพาะปืนที่มี Bullet Drop จริง เช่น RPG)
-    local initDist = (targetPos - camPos).Magnitude
-    local initTOF = math.max(initDist / v, 0.016) + pingSec
-    local predictedPos = targetPos + targetVel * initTOF + 0.5 * targetAccel * (initTOF * initTOF)
+    -- ชดเชยแรงโน้มถ่วงกระสุนตามหลักฟิสิกส์สุทธิ (Drop Compensation = 1/2 * g * t^2)
+    -- ถ้าระยะใกล้ t จะน้อย ค่าความสูงที่ยกขึ้นจะเข้าใกล้ 0 ทันที
+    local bulletDrop = 0.5 * g * (tof * tof)
     
-    -- Iterative solver
-    local maxIter = 8
-    local lastTanTheta = 0.0
-    
-    for iter = 1, maxIter do
-        local diff = predictedPos - camPos
-        local flatDiff = Vector3.new(diff.X, 0, diff.Z)
-        local horizDist = flatDiff.Magnitude
-        local vertDist = diff.Y
-        
-        -- กรณียิงแนวตรงตั้งฉากกับกล้อง
-        if horizDist < 0.001 then
-            local tof = math.abs(vertDist) / math.max(v, 0.001) + pingSec
-            return targetPos + targetVel * tof + 0.5 * targetAccel * (tof * tof)
-        end
-        
-        local v2 = v * v
-        local disc = v2 * v2 - g * (g * horizDist * horizDist + 2 * vertDist * v2)
-        if disc < 0 then
-            return nil -- Out of range
-        end
-        
-        local sqrtDisc = math.sqrt(disc)
-        local tanTheta = (v2 - sqrtDisc) / (g * horizDist)
-        lastTanTheta = tanTheta
-        
-        local cosTheta = 1.0 / math.sqrt(1.0 + tanTheta * tanTheta)
-        local tof = (horizDist / (v * cosTheta)) + pingSec
-        
-        local newPos = targetPos + targetVel * tof + 0.5 * targetAccel * (tof * tof)
-        local error = (newPos - predictedPos).Magnitude
-        if error < 0.005 then
-            predictedPos = newPos
-            break
-        end
-        
-        predictedPos = predictedPos * 0.3 + newPos * 0.7
-    end
-    
-    -- คำนวณ Aim Point จากตำแหน่งพิกัดสุทธิหลังจบ Damping
-    local diff = predictedPos - camPos
-    local flatDiff = Vector3.new(diff.X, 0, diff.Z)
-    local finalHorizDist = flatDiff.Magnitude
-    
-    if finalHorizDist < 0.01 then
-        return predictedPos
-    end
-    
-    -- ใช้ finalHorizDist ที่สอดคล้องกับ flatDiff.Unit ล่าสุด
-    return camPos + (flatDiff.Unit * finalHorizDist) + Vector3.new(0, finalHorizDist * lastTanTheta, 0)
+    return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
+
 
 
 -- 11. ESP Management
