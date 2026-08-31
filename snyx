@@ -188,7 +188,6 @@ local function getClosestTarget()
                     local effectiveDist = (player == currentTarget) and (dist * 0.85) or dist
                     
                     if effectiveDist < shortestDist then  
-                        -- สลับมาเช็ค isVisible เฉพาะตอนที่อยู่ในระยะ FOV เท่านั้น
                         if isVisible(targetPart) then
                             shortestDist = effectiveDist  
                             closestPlayer = player  
@@ -201,34 +200,97 @@ local function getClosestTarget()
     return closestPlayer
 end
 
--- 10. Advanced Dynamic Prediction Engine (Optimized: Use Cached Bullet Speed)
-local function getPredictedPosition(target)
-    local char = target and target.Character
+-- 10. Advanced Dynamic Prediction Engine (Ballistic Prediction Solver v2.2)
+local function getPredictedPosition(target, bulletSpeed, bulletGravity)
+    if not target then return nil end
+    local char = target.Character
     if not char then return nil end
     
     local rootPart = char:FindFirstChild("HumanoidRootPart")
-    local targetPart = char:FindFirstChild("Head") or rootPart
-    if not targetPart then return nil end  
-      
-    local targetPos = targetPart.Position  
+    local headPart = char:FindFirstChild("Head") or rootPart
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not rootPart or not headPart then return nil end
     
-    if State.Prediction and rootPart then  
-        local cam = getCamera()
-        if not cam then return targetPos end
-        
-        local distance = (targetPos - cam.CFrame.Position).Magnitude
-        local currentPing = getPing()
-        local bulletSpeed = cachedBulletSpeed
-        
-        local timeToTarget = (distance / bulletSpeed) + (currentPing / 2)
-        local velocity = rootPart.AssemblyLinearVelocity  
-        
-        if velocity:Dot(velocity) > 0.25 then
-            targetPos = targetPos + (velocity * timeToTarget)  
+    local cam = workspace.CurrentCamera
+    if not cam then return headPart.Position end
+    
+    local targetPos = headPart.Position
+    if not State.Prediction then return targetPos end
+    
+    local camPos = cam.CFrame.Position
+    local v = bulletSpeed or cachedBulletSpeed or 1000
+    local g = bulletGravity or workspace.Gravity
+    
+    -- ใช้ One-Way Ping Delay (RTT / 2 / 1000)
+    local pingSec = ((getPing() or 0) / 2000.0)
+    
+    local targetVel = rootPart.AssemblyLinearVelocity
+    local targetAccel = Vector3.zero
+    if humanoid then
+        local state = humanoid:GetState()
+        local isAir = (state == Enum.HumanoidStateType.Freefall or
+                       state == Enum.HumanoidStateType.Jumping or
+                       humanoid.FloorMaterial == Enum.Material.Air)
+        if isAir then
+            targetAccel = Vector3.new(0, -workspace.Gravity, 0)
         end
-    end  
-      
-    return targetPos
+    end
+    
+    -- Initial guess
+    local initDist = (targetPos - camPos).Magnitude
+    local initTOF = math.max(initDist / v, 0.016) + pingSec
+    local predictedPos = targetPos + targetVel * initTOF + 0.5 * targetAccel * (initTOF * initTOF)
+    
+    -- Iterative solver
+    local maxIter = 8
+    local lastTanTheta = 0.0
+    
+    for iter = 1, maxIter do
+        local diff = predictedPos - camPos
+        local flatDiff = Vector3.new(diff.X, 0, diff.Z)
+        local horizDist = flatDiff.Magnitude
+        local vertDist = diff.Y
+        
+        -- กรณียิงแนวตรงตั้งฉากกับกล้อง
+        if horizDist < 0.001 then
+            local tof = math.abs(vertDist) / math.max(v, 0.001) + pingSec
+            return targetPos + targetVel * tof + 0.5 * targetAccel * (tof * tof)
+        end
+        
+        local v2 = v * v
+        local disc = v2 * v2 - g * (g * horizDist * horizDist + 2 * vertDist * v2)
+        if disc < 0 then
+            return nil -- Out of range
+        end
+        
+        local sqrtDisc = math.sqrt(disc)
+        local tanTheta = (v2 - sqrtDisc) / (g * horizDist)
+        lastTanTheta = tanTheta
+        
+        local cosTheta = 1.0 / math.sqrt(1.0 + tanTheta * tanTheta)
+        local tof = (horizDist / (v * cosTheta)) + pingSec
+        
+        local newPos = targetPos + targetVel * tof + 0.5 * targetAccel * (tof * tof)
+        local error = (newPos - predictedPos).Magnitude
+        if error < 0.005 then
+            predictedPos = newPos
+            break
+        end
+        
+        predictedPos = predictedPos * 0.3 + newPos * 0.7
+    end
+    
+    -- คำนวณ Aim Point จากตำแหน่งพิกัดสุทธิหลังจบ Damping
+    local diff = predictedPos - camPos
+    local flatDiff = Vector3.new(diff.X, 0, diff.Z)
+    local finalHorizDist = flatDiff.Magnitude
+    
+    if finalHorizDist < 0.01 then
+        return predictedPos
+    end
+    
+    -- ใช้ finalHorizDist ที่สอดคล้องกับ flatDiff.Unit ล่าสุด
+    return camPos + (flatDiff.Unit * finalHorizDist) + Vector3.new(0, finalHorizDist * lastTanTheta, 0)
 end
 
 -- 11. ESP Management
