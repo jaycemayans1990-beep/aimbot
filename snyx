@@ -370,7 +370,6 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
     local cam = getCamera()
     if not cam then return end
 
-    -- อัปเดตตำแหน่งและขอบเขตวงกลม FOV ทุกเฟรม
     FOVCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)  
     FOVCircle.Radius = State.FOV  
     FOVCircle.Visible = State.ShowFOV  
@@ -388,13 +387,27 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
             local dir = (targetPos - camPos)
             
             if dir.Magnitude > 0.1 then
-                -- แก้ไข Gimbal Lock (ป้องกันกล้องหมุนควงเวลามองก้มตรงๆ จากที่สูง)
-                local upVector = Vector3.yAxis
-                if math.abs(dir.Unit.Y) > 0.95 then
-                    upVector = Vector3.zAxis
+                local forward = dir.Unit
+
+                -- ใช้ RightVector เดิมของกล้องเป็นฐาน เพื่อรักษา Roll
+                local right = cam.CFrame.RightVector
+
+                -- ปรับ right ให้ตั้งฉากกับ forward ใหม่ (กำจัดส่วนที่ขนานกับ forward)
+                right = right - forward * right:Dot(forward)
+                local rightMag = right.Magnitude
+
+                if rightMag < 0.001 then
+                    right = Vector3.xAxis:Cross(forward)
+                    if right.Magnitude < 0.001 then
+                        right = Vector3.zAxis:Cross(forward)
+                    end
+                    right = right.Unit
+                else
+                    right = right / rightMag
                 end
-                
-                local targetCFrame = CFrame.lookAt(camPos, targetPos, upVector)  
+
+                local up = right:Cross(forward).Unit
+                local targetCFrame = CFrame.fromMatrix(camPos, right, up, -forward)
                 
                 if State.Smoothness >= 0.99 then
                     cam.CFrame = targetCFrame
@@ -407,6 +420,7 @@ RunService:BindToRenderStep("AimbotCameraUpdate", Enum.RenderPriority.Camera.Val
         end  
     end
 end)
+
 
 -- 13. Custom GUI Construction
 local ScreenGui = Instance.new("ScreenGui")
