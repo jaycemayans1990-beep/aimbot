@@ -52,21 +52,23 @@ local function getCamera()
     return camera or workspace.CurrentCamera
 end
 
--- 5. Dynamic Weapon Stats Detection System
+-- 5. Dynamic Weapon Stats Engine (Direct Module Reader + State Fallback)
 local function updateWeaponStats()
+    -- ถ้าปิด Auto Detect ให้ใช้ค่าจาก UI / State ตรงๆ ทันที
     if not State.AutoBulletSpeed then
-        cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+        cachedBulletSpeed = math.max(State.BulletSpeed or 5000, 1)
         cachedBulletGravity = State.BulletGravity or 0
         return
     end
 
     local char = localPlayer and localPlayer.Character
     local tool = char and char:FindFirstChildOfClass("Tool")
-    
+
     if tool then
         local toolName = tool.Name:lower()
         local isLauncher = toolName:find("rpg") or toolName:find("rocket") or toolName:find("launcher") or toolName:find("grenade") or toolName:find("bazooka")
 
+        -- 1. อ่านจากไฟล์ตั้งค่า ACS_Settings ในตัวปืน
         local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
         if acsSettings and acsSettings:IsA("ModuleScript") then
             local success, config = pcall(require, acsSettings)
@@ -74,132 +76,32 @@ local function updateWeaponStats()
                 local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed or config.Velocity
                 if type(speed) == "number" and speed > 0 then
                     cachedBulletSpeed = speed
-                end
-                
-                local drop = config.Drop or config.BulletDrop or config.Gravity or config.G
-                if type(drop) == "number" then
-                    cachedBulletGravity = drop
                 else
-                    cachedBulletGravity = isLauncher and workspace.Gravity or 0
-                end
-                return
-            end
-        end
-
-        local foundSpeed = false
-        for name, value in pairs(tool:GetAttributes()) do
-            local lower = name:lower()
-            if (lower:find("speed") or lower:find("velocity") or lower:find("velo")) and type(value) == "number" then
-                cachedBulletSpeed = value
-                foundSpeed = true
-            end
-        end
-
-        if foundSpeed then
-            cachedBulletGravity = isLauncher and workspace.Gravity or 0
-            return
--- 5. Dynamic Weapon Stats Engine (ACS Engine Event Interceptor)
-local function applyACSData(weaponData)
-    if type(weaponData) ~= "table" then return end
-
-    -- ดึงค่าความเร็วจาก Index 9 และประเภทกระสุนจาก Index 6 ของ ACS ServerBullet Event
-    local speed = weaponData[9] or weaponData.shellSpeed
-    local shellType = weaponData[6] or weaponData.shellType or ""
-    local weaponName = tostring(weaponData[1] or weaponData.weaponName or ""):lower()
-
-    if type(speed) == "number" and speed > 0 then
-        cachedBulletSpeed = speed
-    end
-
-    -- หากเป็น RPG หรือชนิด Explosive ให้ Gravity เป็น 0 (ยิงตรง ไม่โค้งลง)
-    local isLauncher = (shellType == "Explosive") 
-                    or weaponName:find("rpg") 
-                    or weaponName:find("rocket") 
-                    or weaponName:find("launcher") 
-                    or weaponName:find("grenade") 
-                    or weaponName:find("bazooka")
-
-    if isLauncher then
-        cachedBulletGravity = 0
-    else
-        local drop = weaponData.Gravity or weaponData.Drop
-        cachedBulletGravity = type(drop) == "number" and drop or 0
-    end
-end
-
--- ดักจับข้อมูลจาก Remote Event ของ ACS Engine ทันทีที่ยิง
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-
-    if State.AutoBulletSpeed and (method == "FireServer" or method == "fireServer") then
-        if self.Name == "ServerBullet" and type(args[3]) == "table" then
-            applyACSData(args[3])
-        end
-    end
-
-    return oldNamecall(self, ...)
-end)
-
-local function updateWeaponStats()
-    if not State.AutoBulletSpeed then
-        cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
-        cachedBulletGravity = State.BulletGravity or 0
-        return
-    end
-
-    local char = localPlayer and localPlayer.Character
-    local tool = char and char:FindFirstChildOfClass("Tool")
-
-    if tool then
-        local toolName = tool.Name:lower()
-        local isLauncher = toolName:find("rpg") or toolName:find("rocket") or toolName:find("launcher") or toolName:find("grenade") or toolName:find("bazooka")
-
-        local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
-        if acsSettings and acsSettings:IsA("ModuleScript") then
-            local success, config = pcall(require, acsSettings)
-            if success and type(config) == "table" then
-                local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed or config.Velocity
-                if type(speed) == "number" and speed > 0 then
-                    cachedBulletSpeed = speed
+                    -- อ่านค่าใน table ไม่เจอ
+                    cachedBulletSpeed = isLauncher and 400 or (State.BulletSpeed or 5000)
                 end
 
-                local drop = config.Drop or config.BulletDrop or config.Gravity or config.G
+                local drop = config.Drop or config.BulletDrop or config.Gravity
                 cachedBulletGravity = isLauncher and 0 or (type(drop) == "number" and drop or 0)
                 return
             end
         end
 
+        -- 2. กรณีอ่าน Module ไม่สำเร็จ
         if isLauncher then
             cachedBulletSpeed = 400
             cachedBulletGravity = 0
-            return
+        else
+            -- ปืนทั่วไป ดึงค่าตาม State.BulletSpeed ใน UI ทันที
+            cachedBulletSpeed = State.BulletSpeed or 5000
+            cachedBulletGravity = 0
         end
+        return
     end
 
-    cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+    -- กรณีไม่ได้ถือปืนใดๆ
+    cachedBulletSpeed = State.BulletSpeed or 5000
     cachedBulletGravity = 0
-end
-
-local function setupCharacterSpeedListener(char)
-    if not char then return end
-    char.ChildAdded:Connect(function(child)
-        if child:IsA("Tool") then
-            task.defer(updateWeaponStats)
-        end
-    end)
-    char.ChildRemoved:Connect(function(child)
-        if child:IsA("Tool") then
-            task.defer(updateWeaponStats)
-        end
-    end)
-    updateWeaponStats()
-end
-
-if localPlayer then
-    if localPlayer.Character then setupCharacterSpeedListener(localPlayer.Character) end
-    localPlayer.CharacterAdded:Connect(setupCharacterSpeedListener)
 end
 
 -- 6. FOV Circle Drawing Engine
