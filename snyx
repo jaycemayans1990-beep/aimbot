@@ -292,10 +292,24 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     return predictedPos + Vector3.new(0, bulletDrop, 0)
 end
 
--- 11. ESP Management (GPU Optimized v2.4 - Clean & Direct @ 3000 Studs)
-local MAX_ESP_DISTANCE = 3000 -- ระยะมองเห็น 3000 Studs (ครอบคลุมทั้งแมพ)
+-- 11. ESP Management (แก้ไข Memory Leak & Logic เรียบร้อยแล้ว)
+local function isInstanceValid(obj)
+    return obj and obj.Parent ~= nil
+end
+
+local function removeESP(player)
+    local cache = espCache[player]
+    if cache then
+        if cache.Highlight then cache.Highlight:Destroy() end
+        if cache.NameTag then cache.NameTag:Destroy() end
+        espCache[player] = nil
+    end
+end
 
 local function createESP(player, character)
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+
     local highlight = Instance.new("Highlight")
     highlight.Name = "ESP_Highlight"
     highlight.FillColor = Color3.fromRGB(180, 0, 255)
@@ -305,52 +319,75 @@ local function createESP(player, character)
     highlight.Enabled = false
     highlight.Parent = character
 
+    local nameTag = Instance.new("BillboardGui")
+    nameTag.Name = "ESP_NameTag"
+    nameTag.Adornee = head
+    nameTag.Size = UDim2.new(0, 150, 0, 30)
+    nameTag.StudsOffset = Vector3.new(0, 2, 0)
+    nameTag.AlwaysOnTop = true
+    nameTag.Enabled = false
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = player.Name
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.TextSize = 14
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextStrokeTransparency = 0
+    textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    textLabel.Parent = nameTag
+
+    nameTag.Parent = character
+
     espCache[player] = {
         Highlight = highlight,
+        NameTag = nameTag,
         Character = character
     }
 end
 
-local function removeESP(player)
-    if espCache[player] then
-        if espCache[player].Highlight then 
-            espCache[player].Highlight:Destroy() 
-        end
-        espCache[player] = nil
-    end
-end
-
 local function processESP()
-    local cam = getCamera()
-    if not cam then return end
-
-    local camPos = cam.CFrame.Position
-    local stateESP = State and State.ESP
+    -- ปิด ESP ทั้งหมด สั่งล้าง Cache ออกทั้งหมด
+    if not State.ESP and not State.ESPName then
+        local playersToRemove = {}
+        for player in pairs(espCache) do
+            table.insert(playersToRemove, player)
+        end
+        for _, player in ipairs(playersToRemove) do
+            removeESP(player)
+        end
+        return
+    end
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == localPlayer then continue end
 
         local character = player.Character
-        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-        
-        if character and rootPart then
-            if not espCache[player] or espCache[player].Character ~= character then
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+        if character and humanoid and humanoid.Health > 0 then
+            local cache = espCache[player]
+
+            -- สร้างใหม่หากยังไม่มี หรือตัวละคร Respawn
+            if not cache or cache.Character ~= character then
                 removeESP(player)
                 createESP(player, character)
+                cache = espCache[player]
             end
 
-            local cache = espCache[player]
-            if cache and cache.Highlight then
-                if stateESP and isValidEnemy(player) then
-                    local dist = (rootPart.Position - camPos).Magnitude
-                    if dist <= MAX_ESP_DISTANCE then
-                        local _, onScreen = cam:WorldToViewportPoint(rootPart.Position)
-                        cache.Highlight.Enabled = onScreen
-                    else
-                        cache.Highlight.Enabled = false
-                    end
-                else
-                    cache.Highlight.Enabled = false
+            if cache then
+                -- ตรวจสอบว่า Object โดนปลดออกจาก Parent หรือไม่ (ถ้าหลุดให้ลบตัวเก่าทิ้งแล้วสร้างใหม่)
+                if not isInstanceValid(cache.Highlight) or not isInstanceValid(cache.NameTag) then
+                    removeESP(player)
+                    createESP(player, character)
+                    cache = espCache[player]
+                end
+
+                if cache then
+                    local isEnemy = isValidEnemy(player)
+                    cache.Highlight.Enabled = State.ESP and isEnemy
+                    cache.NameTag.Enabled = State.ESPName and isEnemy
                 end
             end
         else
@@ -361,8 +398,11 @@ end
 
 Players.PlayerRemoving:Connect(removeESP)
 
-RunService.Heartbeat:Connect(processESP)
-
+task.spawn(function()
+    while task.wait(0.15) do
+        processESP()
+    end
+end)
 
 -- 12. Main Camera Engine
 RunService:UnbindFromRenderStep("AimbotCameraUpdate")
