@@ -42,9 +42,9 @@ local cachedBulletGravity = 0
 -- 3. Ping Helper Function
 local function getPing()
     if localPlayer then
-        return localPlayer:GetNetworkPing()
+        return localPlayer:GetNetworkPing() / 2
     end
-    return 0.05
+    return 0.025
 end
 
 -- 4. Dynamic Camera Helper
@@ -98,11 +98,82 @@ local function updateWeaponStats()
         if foundSpeed then
             cachedBulletGravity = isLauncher and workspace.Gravity or 0
             return
+-- 5. Dynamic Weapon Stats Engine (ACS Engine Event Interceptor)
+local function applyACSData(weaponData)
+    if type(weaponData) ~= "table" then return end
+
+    -- ดึงค่าความเร็วจาก Index 9 และประเภทกระสุนจาก Index 6 ของ ACS ServerBullet Event
+    local speed = weaponData[9] or weaponData.shellSpeed
+    local shellType = weaponData[6] or weaponData.shellType or ""
+    local weaponName = tostring(weaponData[1] or weaponData.weaponName or ""):lower()
+
+    if type(speed) == "number" and speed > 0 then
+        cachedBulletSpeed = speed
+    end
+
+    -- หากเป็น RPG หรือชนิด Explosive ให้ Gravity เป็น 0 (ยิงตรง ไม่โค้งลง)
+    local isLauncher = (shellType == "Explosive") 
+                    or weaponName:find("rpg") 
+                    or weaponName:find("rocket") 
+                    or weaponName:find("launcher") 
+                    or weaponName:find("grenade") 
+                    or weaponName:find("bazooka")
+
+    if isLauncher then
+        cachedBulletGravity = 0
+    else
+        local drop = weaponData.Gravity or weaponData.Drop
+        cachedBulletGravity = type(drop) == "number" and drop or 0
+    end
+end
+
+-- ดักจับข้อมูลจาก Remote Event ของ ACS Engine ทันทีที่ยิง
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    if State.AutoBulletSpeed and (method == "FireServer" or method == "fireServer") then
+        if self.Name == "ServerBullet" and type(args[3]) == "table" then
+            applyACSData(args[3])
+        end
+    end
+
+    return oldNamecall(self, ...)
+end)
+
+local function updateWeaponStats()
+    if not State.AutoBulletSpeed then
+        cachedBulletSpeed = math.max(State.BulletSpeed or 2000, 1)
+        cachedBulletGravity = State.BulletGravity or 0
+        return
+    end
+
+    local char = localPlayer and localPlayer.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+
+    if tool then
+        local toolName = tool.Name:lower()
+        local isLauncher = toolName:find("rpg") or toolName:find("rocket") or toolName:find("launcher") or toolName:find("grenade") or toolName:find("bazooka")
+
+        local acsSettings = tool:FindFirstChild("ACS_Settings") or tool:FindFirstChild("Settings") or tool:FindFirstChild("Config")
+        if acsSettings and acsSettings:IsA("ModuleScript") then
+            local success, config = pcall(require, acsSettings)
+            if success and type(config) == "table" then
+                local speed = config.Velo or config.MuzzleVelocity or config.BulletSpeed or config.Velocity
+                if type(speed) == "number" and speed > 0 then
+                    cachedBulletSpeed = speed
+                end
+
+                local drop = config.Drop or config.BulletDrop or config.Gravity or config.G
+                cachedBulletGravity = isLauncher and 0 or (type(drop) == "number" and drop or 0)
+                return
+            end
         end
 
         if isLauncher then
             cachedBulletSpeed = 400
-            cachedBulletGravity = workspace.Gravity
+            cachedBulletGravity = 0
             return
         end
     end
@@ -254,7 +325,7 @@ local function getPredictedPosition(target, bulletSpeed, bulletGravity)
     local camPos = cam.CFrame.Position
     local v = math.max(bulletSpeed or cachedBulletSpeed or 1000, 1)
     local g = bulletGravity or cachedBulletGravity or 0
-    local pingSec = ((getPing() or 0) / 2000.0)
+    local pingSec = getPing()
     
     local rawVel = rootPart.AssemblyLinearVelocity or Vector3.zero
     local isSeated = humanoid and (humanoid.Sit or humanoid.SeatPart ~= nil)
